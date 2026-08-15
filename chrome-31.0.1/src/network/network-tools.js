@@ -13,6 +13,7 @@
  */
 
 import { ensureOffscreen } from '../offscreen/ensure.js';
+import { loadWorkspaceHandle, workspaceSaveStream } from '../workspace/workspace-fs.js';
 
 // ─── HTML utilities ─────────────────────────────────────────────────────
 
@@ -1081,6 +1082,80 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
   return result;
 }
 
+/**
+ * Save a skill download job's file INTO the working directory when one is
+ * picked (and its readwrite permission is granted). Returns null when there
+ * is no usable working directory — the caller then falls back to
+ * chrome.downloads via downloadSkillFile. Once a workspace write is
+ * attempted, the outcome (success or failure) is returned as-is so files
+ * never silently land in the Downloads folder instead.
+ */
+async function tryWorkspaceSaveSkillFile(url, filename) {
+  let handle = null;
+  try {
+    handle = await loadWorkspaceHandle();
+    if (handle && typeof handle.queryPermission === 'function') {
+      const perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') return null;
+    }
+  } catch { return null; }
+  if (!handle) return null;
+
+  const file = await fetchSkillDownloadData(url, url);
+  let staged = null;
+  if (file.tooLarge === true) {
+    staged = await prepareStagedSkillDownload(url, url);
+    if (!staged?.success) {
+      return {
+        success: false,
+        ...(staged?.blocked ? { blocked: true } : {}),
+        ...(staged?.status != null ? { status: staged.status } : {}),
+        ...(file.bytesExpected != null ? { bytesExpected: file.bytesExpected } : {}),
+        ...(file.bytesReceived != null ? { bytesReceived: file.bytesReceived } : {}),
+        finalUrl: staged?.finalUrl || file.finalUrl || url,
+        error: staged?.error || file.error,
+      };
+    }
+  }
+  if (!file.success && !staged) {
+    return {
+      success: false,
+      ...(file.blocked ? { blocked: true } : {}),
+      ...(file.status != null ? { status: file.status } : {}),
+      ...(file.bytesExpected != null ? { bytesExpected: file.bytesExpected } : {}),
+      ...(file.bytesReceived != null ? { bytesReceived: file.bytesReceived } : {}),
+      finalUrl: file.finalUrl || url,
+      error: file.error,
+    };
+  }
+
+  const contentType = safeDataUrlMimeType(staged?.contentType || file.contentType);
+  const responseFilename = filenameFromContentDisposition(staged?.contentDisposition)
+    || safeDownloadFilename(staged?.suggestedFilename)
+    || safeDownloadFilename(file.suggestedFilename)
+    || filenameFromContentDisposition(file.contentDisposition);
+  const safeName = safeDownloadFilename(filename) || responseFilename || defaultSkillDownloadFilename(contentType);
+  const sourceUrl = staged ? staged.localUrl : file.dataUrl;
+  try {
+    const res = await fetch(sourceUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const saved = await workspaceSaveStream(safeName || 'media-download', res);
+    return {
+      success: true,
+      workspacePath: saved.path,
+      ...(saved.bytes != null ? { bytes: saved.bytes } : {}),
+      ...(safeName ? { suggestedFilename: safeName } : {}),
+      contentType,
+      url,
+      finalUrl: staged?.finalUrl || file.finalUrl || url,
+    };
+  } catch (e) {
+    return { success: false, error: `Workspace save failed: ${e?.message || String(e)}` };
+  } finally {
+    if (staged?.releaseToken) await releaseStagedSkillDownload(staged.releaseToken).catch(() => {});
+  }
+}
+
 async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
   const create = await fetchSkillJson(endpoint.href, {
     method: 'POST',
@@ -1144,7 +1219,8 @@ async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
 
   let cleanup = null;
   try {
-    const download = await downloadSkillFile(fileEndpoint.url, payload.filename, Math.min(tool.job?.timeoutMs || 90000, 120000));
+    const download = (await tryWorkspaceSaveSkillFile(fileEndpoint.url, payload.filename))
+      || (await downloadSkillFile(fileEndpoint.url, payload.filename, Math.min(tool.job?.timeoutMs || 90000, 120000)));
     const releaseToken = download.releaseToken || '';
     if (Object.prototype.hasOwnProperty.call(download, 'releaseToken')) delete download.releaseToken;
     const cleanupDeferred = cleanupEndpoint.ok && download.pending === true;

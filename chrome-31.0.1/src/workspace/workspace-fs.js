@@ -342,3 +342,25 @@ export async function workspaceDownload(urls, { subfolder = '' } = {}) {
     failedCount: results.filter((r) => r && !r.success).length,
   };
 }
+
+/**
+ * Stream a fetch Response body directly INTO the working directory root
+ * (used by skill HTTP download jobs such as download_public_media, so their
+ * files land in the working directory instead of the browser Downloads
+ * folder). The name is sanitized and uniquified; nothing is overwritten.
+ */
+export async function workspaceSaveStream(name, response) {
+  const handle = await requireHandle();
+  const base = sanitizeFilename(name);
+  const finalName = await uniqueName(handle, base);
+  const fileHandle = await handle.getFileHandle(finalName, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await response.body.pipeTo(writable);
+  } catch (e) {
+    try { await writable.abort(); } catch { /* already closed */ }
+    throw e;
+  }
+  const length = response.headers?.get?.('content-length');
+  return { success: true, path: finalName, bytes: length ? Number(length) : null };
+}
