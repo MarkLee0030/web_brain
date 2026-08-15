@@ -2,7 +2,7 @@
 
 ```webbrain-skill
 {
-  "summary": "Download many images from a gallery or image page to the user's download directory, in batches, without re-asking for each file.",
+  "summary": "Download many images from a gallery or image page in batches into the working directory, without re-asking for each file.",
   "modes": ["act"],
   "intents": ["batch_image_download", "bulk_image_save", "gallery_download", "save_all_images"]
 }
@@ -10,30 +10,28 @@
 
 Use this skill when the user asks to download images from a page in bulk — "把这个页面里的图都下载下来", "把相册前 50 张保存到本地", "download all images from this gallery", and similar. It turns a long, repetitive download job into one paced, tracked run.
 
-## Where files land
+## Where files land (read this first)
 
-Files are saved through the `download_files` tool into the browser's download location:
-
-- If the user set **Settings → Display → Download directory**, files go into that folder (relative folders sit inside the browser/OS Downloads folder; absolute paths like `D:/images` are used as-is). The folder must already exist.
-- Otherwise files land in the default Downloads folder.
-- Confirm the target location with the user once at the start when it matters. Never move files afterwards yourself — if the user needs a different final location, ask them to set the download directory first, then start the run.
+- **If the `[WORKING DIRECTORY]` note is present in your system prompt**, the user has granted a local working directory, and it is THE destination for these downloads. Every batch goes through the `workspace_download` tool, which writes the bytes straight into that directory. NEVER use `download_files` (the browser Downloads folder) for an image batch while a working directory exists — that puts the files in the wrong place.
+- **Default subfolder**: create a NEW subfolder inside the working directory for the job, named after the page title (sanitize it: strip characters that are invalid in file names, collapse spaces, trim to a reasonable length). You may confirm this name with the user in one short line — but if the user simply said "download the images" without naming a folder, do not stop and wait for confirmation: use the page-title name and proceed.
+- **If no `[WORKING DIRECTORY]` note is present**, do not ask the user to type or confirm a parent folder path. Tell them once to click the folder button in the WebBrain side panel header to pick the folder, then proceed with `workspace_download`. Only if the user explicitly refuses to pick a folder may you fall back to `download_files` (which lands in the browser's download directory).
 
 ## Workflow
 
-1. **Scope first.** Ask `clarify` only when the scope is genuinely unknown: which page/gallery, roughly how many images, and the target folder. For small galleries (≤ 20 images) just start. For large ones (> 50), state the expected count and continue unless the user set a different limit.
+1. **Scope.** Ask `clarify` only when the scope is genuinely unknown (which gallery, how many, what to name the folder). For small galleries (≤ 20 images) just start. Default folder name = page title.
 2. **Discover image URLs.**
-   - Prefer `extract_data` with a schema that collects all `img`/`a[href]`/`meta[property="og:image"]` URL candidates.
-   - Fall back to `get_accessibility_tree` / `read_page` when `extract_data` is unavailable or returns nothing.
+   - Prefer `extract_data` with a schema that collects all `img`/`a[href]`/`meta[property="og:image"]` URL candidates. Fall back to `get_accessibility_tree` / `read_page` when `extract_data` is unavailable or returns nothing.
    - Resolve every candidate to an absolute URL. When `srcset` exists, pick the largest listed size. Prefer full-resolution URLs over thumbnails (strip `_thumb`, `-300x200`, `w=...` style suffixes only when the original URL is verifiable — when in doubt keep the URL as found).
+   - **Pattern detection (preferred)**: you do NOT need to inspect every image. If the URLs share an obvious pattern — e.g. `xxx-1.jpg`, `xxx-2.jpg` … `xxx-48.jpg`, or an index in the path — verify a couple of samples (try one middle index and the last one), then generate the whole list from the pattern and hand it to `workspace_download` in ONE call. Do not scroll through, screenshot, and extract every single image when a pattern covers them.
 3. **Handle lazy/infinite galleries.** Many image sites load items on scroll. Between extraction passes, use `scroll` and `wait_for_stable`, then extract again and append only URLs you have not seen. Stop after one full pass yields no new URLs, or when the agreed count is reached.
-4. **Download in batches.** `download_files` accepts at most 3 concurrent / 50 total URLs per call. Send ≤ 30 URLs per call, then continue with the next batch. Use the `urls` array form (not one call per image). For a single file that needs a specific name, use the `url` + `filename` form.
-5. **Track progress.** After each batch, record the running count and the last processed index/URL in your scratchpad (`scratchpad_write`, one line per fact). For itemized galleries use `progress_update` with one row per image (`processed` / `failed` / `skipped`). Re-read your scratchpad before each new batch so a long run survives context compaction.
-6. **Verify and retry.** After each batch, cross-check with `list_downloads` if any result reports failure. Retry a failed URL once; after that mark it `failed` and move on — do not loop on the same URL.
-7. **Report.** Finish with a short summary: how many images were downloaded, to which folder, how many failed and why (403/404/timeout), and the download IDs are already in your scratchpad.
+4. **Download in batches.** `workspace_download` accepts at most 3 concurrent / 50 total URLs per call, plus a `subfolder` that is created on demand. Send ≤ 50 URLs per call with `subfolder: '<page-title>'`, then continue with the next batch. Use the `urls` array form (never one call per image).
+5. **Track progress.** After each batch, record the running count and the last processed index/URL in your scratchpad (`scratchpad_write`, one line per fact). Re-read your scratchpad before each new batch so a long run survives context compaction.
+6. **Verify and retry.** After the run, verify with `workspace_list({ path: '<subfolder>' })` that the expected number of files landed in the working directory. Retry a failed URL once; after that mark it `failed` and move on — do not loop on the same URL.
+7. **Report.** Finish with a short summary: how many images were downloaded, into which subfolder of the working directory, and how many failed and why (403/404/timeout).
 
 ## Rules
 
-- Never claim the browser cannot write to local disk. Downloads go through the browser's download system via `download_files` and land in the user's configured download directory — that IS a local disk write. If the user names a specific target folder (for example D:/Photo/XXX), tell them once to set that folder in Settings → Display → Download directory (it must already exist), then proceed with the download; do not dump a URL list and hand the work back to the user.
+- The working directory is the destination — every image batch goes through `workspace_download` INTO it. Never claim the browser cannot write to local disk: `workspace_download` fetches the bytes and writes them directly into the working directory.
 - Only download images the user asked for from the page they pointed at. Do not crawl to other domains or follow pagination beyond the same gallery unless the user said so.
 - Do not ask the user whether the site or image type is "supported" before trying — extract, download, and report what actually succeeded or failed.
 - Do not download obvious non-image resources (scripts, stylesheets, HTML pages) even when the selector matches them — filter by extension, MIME hints, or `img`/`picture` context.

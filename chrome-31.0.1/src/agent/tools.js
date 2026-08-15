@@ -944,7 +944,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'download_files',
-      description: 'Download one or more files. Pass a single url string or an array of urls (max 3 concurrent, max 50 total). Files are saved to the user\'s configured download directory (default: the browser Downloads folder). Returns per-URL results with the downloadId, completion state, and a browser-reported filename for immediate verification. The downloadId (not the path/filename) is auto-recorded to your scratchpad. To attach a downloaded file to a form later, pass its downloadId to upload_file — you do NOT need to remember the path. Do not copy downloaded filenames or paths into scratchpad; use list_downloads only when you need to verify details.',
+      description: 'Download one or more files. Pass a single url string or an array of urls (max 3 concurrent, max 50 total). Files are saved to the user\'s configured download directory (default: the browser Downloads folder). Returns per-URL results with the downloadId, completion state, and a browser-reported filename for immediate verification. The downloadId (not the path/filename) is auto-recorded to your scratchpad. To attach a downloaded file to a form later, pass its downloadId to upload_file — you do NOT need to remember the path. Do not copy downloaded filenames or paths into scratchpad; use list_downloads only when you need to verify details. If the [WORKING DIRECTORY] note is present in your system prompt and the files belong in the working directory, use workspace_download instead — this tool lands in the browser download directory, not the working directory.',
       parameters: {
         type: 'object',
         properties: {
