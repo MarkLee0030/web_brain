@@ -5454,6 +5454,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         continue;
       }
 
+      // Hard backstop for the working-directory sandbox: file-writing tools
+      // that bypass the workspace channel are aborted with a permission
+      // error (see _workspaceFileViolation). Placed before the capability
+      // gate so blocked calls never prompt the user for host permissions.
+      const workspaceFileViolation = this._workspaceFileViolation(fnName);
+      if (workspaceFileViolation) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(workspaceFileViolation),
+        });
+        onUpdate('warning', { message: workspaceFileViolation.error });
+        continue;
+      }
+
       // Deterministic capability × origin permission gate (permission-gate.js).
       // Maps the tool to a capability and requires a (capability, host) grant —
       // allow once / always / deny — chosen by the user. No text inspection, no
@@ -12743,7 +12758,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // the guard rules for the workspace_* tools (the hard enforcement is the
     // FileSystemDirectoryHandle root + normalizeWorkspacePath).
     if (this.workingDirectoryName && this.workingDirectoryName.trim()) {
-      prompt += `\n\n[WORKING DIRECTORY]\nThe user has granted a local working directory named "${this.workingDirectoryName.trim()}". You may create folders, delete items, write generated files, read text files, and download files INTO this directory using the workspace_* tools. Every path is relative to this directory — absolute paths and ".." are rejected by the runtime, and nothing outside this directory can be touched. When the user mentions a full path such as "D:\\Photo\\sub\\file", recognize it as this directory whenever one of its folder components matches the directory name above, and treat the part after that name as the relative path instead of asking again. For any target the user names that lies elsewhere on disk, ask the user to pick it (or the intended folder) with the folder button in the side panel header.`;
+      prompt += `\n\n[WORKING DIRECTORY]\nThe user has granted a local working directory named "${this.workingDirectoryName.trim()}". You may create folders, delete items, write generated files, read text files, and download files INTO this directory using the workspace_* tools. Every path is relative to this directory — absolute paths and ".." are rejected by the runtime, and nothing outside this directory can be touched. The download_files, download_social_media and download_resource_from_page tools are BLOCKED while this directory is selected — every save must use the workspace_* tools. When the user mentions a full path such as "D:\\Photo\\sub\\file", recognize it as this directory whenever one of its folder components matches the directory name above, and treat the part after that name as the relative path instead of asking again. For any target the user names that lies elsewhere on disk, ask the user to pick it (or the intended folder) with the folder button in the side panel header.`;
     }
     if (this.webMcpEnabled && (!this._isActionMode(mode) || tier !== 'compact')) {
       const webMcpPrompt = this._isActionMode(mode) ? SYSTEM_PROMPT_WEBMCP_ACT : SYSTEM_PROMPT_WEBMCP_ASK;
@@ -13109,6 +13124,29 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       requiresApiAllow: false,
       error: `This URL is the HTTPS endpoint for the enabled ${skillTool.name} skill tool. Do not call ${name} against enabled skill endpoints; call ${skillTool.name} directly with the user-visible arguments instead. Skill tools do not require /allow-api; read-only skill tools can run in Ask mode, and download-job skill tools require Act mode plus download permission. /allow-api only applies to mutating fetch_url/research_url API calls.`,
     };
+  }
+
+  /**
+   * Working-directory enforcement hook (hard backstop): when the user has
+   * picked a working directory, every file write must go through the
+   * workspace_* channel. Tools that write to disk outside the working
+   * directory (the chrome.downloads-based ones) are aborted here with a
+   * permission-style error, so the model retries with the sandboxed tool
+   * instead of silently landing files in the Downloads folder. Prompt-level
+   * guidance alone has proven insufficient for this.
+   */
+  _workspaceFileViolation(name) {
+    if (!this.workingDirectoryName || !this.workingDirectoryName.trim()) return null;
+    const msg = {
+      download_files:
+        'Permission denied: a working directory is selected, so files must land inside it. Use workspace_download({urls, subfolder}) instead — download_files writes to the browser Downloads folder, which is outside the granted working directory.',
+      download_social_media:
+        'Permission denied: a working directory is selected. Use download_public_media (it saves directly into the working directory) or workspace_download instead — download_social_media writes to the browser Downloads folder, outside the granted working directory.',
+      download_resource_from_page:
+        'Permission denied: a working directory is selected. Use workspace_download({url|urls, subfolder}) to save the resource into the working directory — download_resource_from_page writes to the browser Downloads folder, outside it.',
+    }[name];
+    if (!msg) return null;
+    return { success: false, denied: true, blockedByWorkingDirectory: true, error: msg };
   }
 
   _isUntrustedTool(name) {

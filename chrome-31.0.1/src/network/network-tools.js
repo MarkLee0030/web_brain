@@ -1091,15 +1091,34 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
  * never silently land in the Downloads folder instead.
  */
 async function tryWorkspaceSaveSkillFile(url, filename) {
-  let handle = null;
+  // Mirrors the working-directory enforcement policy: once the user has
+  // picked a working directory (chrome.storage.local state exists), the
+  // file MUST land inside it. No silent fallback to the Downloads folder,
+  // even when the handle is missing or its readwrite permission was
+  // revoked by a browser restart.
+  let stored = null;
   try {
-    handle = await loadWorkspaceHandle();
-    if (handle && typeof handle.queryPermission === 'function') {
-      const perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') return null;
-    }
+    stored = (await chrome.storage.local.get(['workingDirectory'])).workingDirectory;
   } catch { return null; }
-  if (!handle) return null;
+  if (!stored || typeof stored.name !== 'string' || !stored.name) return null;
+
+  let handle = null;
+  try { handle = await loadWorkspaceHandle(); } catch { /* fall through */ }
+  if (!handle) {
+    return {
+      success: false,
+      error: 'The working directory is selected but its handle is missing. Ask the user to click the folder button in the WebBrain side panel header to pick it again.',
+    };
+  }
+  try {
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') {
+      return {
+        success: false,
+        error: 'The working directory permission needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts). Ask the user to click the folder button in the WebBrain side panel header once to re-grant it.',
+      };
+    }
+  } catch { /* fall through and let the write surface any problem */ }
 
   const file = await fetchSkillDownloadData(url, url);
   let staged = null;
