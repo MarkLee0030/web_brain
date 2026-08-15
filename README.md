@@ -5,7 +5,11 @@
 ## 定制功能
 
 - **工作目录沙箱（核心）**：侧栏顶部选一个本地文件夹，模型只能在代码层 guards 限制下对该目录操作——建/删子文件夹、写生成的文件、读文本、批量下载直写。四层隔离：OS 级 `FileSystemDirectoryHandle` 沙箱（天然不可逃逸）→ 路径校验（拒绝绝对路径/盘符/`..`）→ 权限门（FILESYSTEM 能力，once/always/deny）→ 系统提示词边界。
-- **硬强制 hook**：选中工作目录后，`download_files` / `download_social_media` / `download_resource_from_page` 在执行前被代码层 abort，返回 permission 错误引导模型改用 `workspace_*` 通道；`download_public_media`（FreeSkillz 社媒下载）也会直写工作目录。**文件只能落在指定文件夹内**。
+- **增删改查全量拦截（硬强制 hook）**：选中工作目录后，所有文件操作在代码层强制限定在该目录内——
+  - **写**：`download_files` / `download_social_media` / `download_resource_from_page` 在执行前被 abort，返回 permission 错误引导改用 `workspace_download`；`download_public_media`（FreeSkillz 社媒下载）直写工作目录，授权失效时报错而不是静默回落 Downloads；
+  - **读**：`read_downloaded_file` 被拦截（改用 `workspace_read_file`）；`upload_file` 只接受工作目录相对路径（经目录句柄读取后注入页面表单），绝对路径和 downloadId 一律 abort；
+  - **增/删/改**：`workspace_mkdir` / `workspace_delete` / `workspace_write_file` 本身被 OS 级目录句柄 + 路径校验封死，`..`、绝对路径、盘符全部拒绝并返回 permission 错误。
+  - **文件只能落在、只能读自指定文件夹内**。
 - **批量图片下载技能**（`skills/batch-image-download.md`）：默认**规律优先**——提取一次、找出 URL 命名规律（如 `xxx-1`…`xxx-48`）、抽验中间+末尾样本后整批一次下载，不逐张滚屏；默认在工作目录内新建以页面标题命名的子文件夹。
 - **思考强度按钮**：侧栏一键循环切换 Muse-Glimmer（auto/low/medium/high/xhigh）与 Qwen3.5+（auto/off/low/medium/xhigh）档位，即时生效。
 - **下载目录支持绝对路径**：设置里可填 `D:/images` 这类 Windows 绝对路径（文件夹需已存在）。

@@ -48,6 +48,7 @@ import {
   workspaceWriteFile,
   workspaceReadFile,
   workspaceDownload,
+  workspaceReadUpload,
 } from '../workspace/workspace-fs.js';
 import {
   isPdfUrl,
@@ -12758,7 +12759,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // the guard rules for the workspace_* tools (the hard enforcement is the
     // FileSystemDirectoryHandle root + normalizeWorkspacePath).
     if (this.workingDirectoryName && this.workingDirectoryName.trim()) {
-      prompt += `\n\n[WORKING DIRECTORY]\nThe user has granted a local working directory named "${this.workingDirectoryName.trim()}". You may create folders, delete items, write generated files, read text files, and download files INTO this directory using the workspace_* tools. Every path is relative to this directory — absolute paths and ".." are rejected by the runtime, and nothing outside this directory can be touched. The download_files, download_social_media and download_resource_from_page tools are BLOCKED while this directory is selected — every save must use the workspace_* tools. When the user mentions a full path such as "D:\\Photo\\sub\\file", recognize it as this directory whenever one of its folder components matches the directory name above, and treat the part after that name as the relative path instead of asking again. For any target the user names that lies elsewhere on disk, ask the user to pick it (or the intended folder) with the folder button in the side panel header.`;
+      prompt += `\n\n[WORKING DIRECTORY]\nThe user has granted a local working directory named "${this.workingDirectoryName.trim()}". You may create folders, delete items, write generated files, read text files, and download files INTO this directory using the workspace_* tools. Every path is relative to this directory — absolute paths and ".." are rejected by the runtime, and nothing outside this directory can be touched. The download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED while this directory is selected, and upload_file only accepts paths relative to this directory — every file save and read must go through the workspace_* tools. When the user mentions a full path such as "D:\\Photo\\sub\\file", recognize it as this directory whenever one of its folder components matches the directory name above, and treat the part after that name as the relative path instead of asking again. For any target the user names that lies elsewhere on disk, ask the user to pick it (or the intended folder) with the folder button in the side panel header.`;
     }
     if (this.webMcpEnabled && (!this._isActionMode(mode) || tier !== 'compact')) {
       const webMcpPrompt = this._isActionMode(mode) ? SYSTEM_PROMPT_WEBMCP_ACT : SYSTEM_PROMPT_WEBMCP_ASK;
@@ -13144,6 +13145,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         'Permission denied: a working directory is selected. Use download_public_media (it saves directly into the working directory) or workspace_download instead — download_social_media writes to the browser Downloads folder, outside the granted working directory.',
       download_resource_from_page:
         'Permission denied: a working directory is selected. Use workspace_download({url|urls, subfolder}) to save the resource into the working directory — download_resource_from_page writes to the browser Downloads folder, outside it.',
+      read_downloaded_file:
+        'Permission denied: a working directory is selected. Use workspace_read_file({path}) to read files inside the working directory — read_downloaded_file only reads chrome.downloads files, which live outside it.',
     }[name];
     if (!msg) return null;
     return { success: false, denied: true, blockedByWorkingDirectory: true, error: msg };
@@ -20654,6 +20657,35 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const suppliedFilePath = typeof args.filePath === 'string' && args.filePath.trim()
         ? args.filePath
         : null;
+      // Working-directory enforcement for file reads: while a working
+      // directory is selected, the only disk source upload_file may read is
+      // a path relative to it. downloadId (chrome.downloads files) and
+      // absolute filePath both point outside the directory and are aborted;
+      // attachmentId bytes come from the user and stay allowed. A relative
+      // path is resolved below through the directory handle and injected as
+      // in-memory bytes, so reads stay inside the sandbox too.
+      let workspaceUploadPath = null;
+      if (!compactUpload && this.workingDirectoryName && this.workingDirectoryName.trim()) {
+        if (!attachmentPayload && args.downloadId != null) {
+          return {
+            success: false,
+            denied: true,
+            blockedByWorkingDirectory: true,
+            error: 'Permission denied: a working directory is selected, so files can only be read from inside it. downloadId refers to a file outside the working directory — save the file into the working directory (workspace_download) and pass its relative path instead.',
+          };
+        }
+        if (!attachmentPayload && suppliedFilePath) {
+          if (/^([a-zA-Z]:|[/\\]|~)/.test(suppliedFilePath.trim())) {
+            return {
+              success: false,
+              denied: true,
+              blockedByWorkingDirectory: true,
+              error: 'Permission denied: a working directory is selected, so files can only be read from inside it. Pass a path relative to the working directory instead of the absolute filePath.',
+            };
+          }
+          workspaceUploadPath = suppliedFilePath;
+        }
+      }
       if (!attachmentPayload && args.downloadId != null) {
         try {
           const items = await new Promise((resolve, reject) => {
@@ -20676,8 +20708,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           if (!suppliedFilePath) return { success: false, error: `Could not resolve downloadId ${args.downloadId}: ${e.message}` };
         }
       }
+      if (workspaceUploadPath) {
+        try {
+          const ws = await workspaceReadUpload(workspaceUploadPath);
+          attachmentPayload = { base64: ws.base64, filename: ws.filename, mimeType: ws.mimeType };
+        } catch (e) {
+          return { success: false, error: e?.message || String(e) };
+        }
+      }
       if (!attachmentPayload && !args.filePath) {
-        return { success: false, error: 'upload_file needs attachmentId (from the current user-attachment notice), downloadId (from download_files / list_downloads), or filePath (absolute local path).' };
+        return { success: false, error: 'upload_file needs attachmentId (from the current user-attachment notice), downloadId (from download_files / list_downloads), or filePath (absolute; or relative to the working directory when one is selected).' };
       }
       let uploadDispatched = false;
       let uploadQuery = null;
@@ -20731,7 +20771,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             return {
               success: true,
               file: attachmentPayload.filename,
-              attachmentId: String(args.attachmentId),
+              ...(args.attachmentId != null ? { attachmentId: String(args.attachmentId) } : { source: 'working_directory' }),
               attached: { name: attached.name, size: attached.size },
               verified: false,
               attachmentState: 'input_attached',
@@ -20741,7 +20781,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: true,
             file: attachmentPayload.filename,
-            attachmentId: String(args.attachmentId),
+            ...(args.attachmentId != null ? { attachmentId: String(args.attachmentId) } : { source: 'working_directory' }),
             verified: false,
             attachmentState: 'page_consumed',
             remoteStateVerified: false,

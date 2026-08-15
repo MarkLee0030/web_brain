@@ -119,6 +119,12 @@ export function normalizeWorkspacePath(path) {
   return segments;
 }
 
+// Permission-style wording for every escape attempt, so the model reads it
+// as a sandbox boundary (retry with a relative path) rather than a bug.
+function workspaceEscapeError(path) {
+  return `Permission denied: "${String(path)}" is outside the working directory — paths must stay relative to it (absolute paths, drive letters, ".." and invalid filename characters are rejected by the sandbox).`;
+}
+
 async function requireHandle() {
   const handle = await loadWorkspaceHandle();
   if (!handle) {
@@ -159,7 +165,7 @@ function friendlyPath(segments) {
 export async function workspaceList(path) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
-  if (segments === null) throw new Error(`Invalid workspace path: ${String(path)}`);
+  if (segments === null) throw new Error(workspaceEscapeError(path));
   let dir;
   try {
     dir = await resolveDirMaybe(handle, segments, false);
@@ -188,7 +194,7 @@ export async function workspaceMkdir(path) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
   if (segments === null || segments.length === 0) {
-    throw new Error(`Invalid workspace folder path: ${String(path)}`);
+    throw new Error(workspaceEscapeError(path));
   }
   await resolveDirMaybe(handle, segments, true);
   return { created: friendlyPath(segments) };
@@ -197,7 +203,7 @@ export async function workspaceMkdir(path) {
 export async function workspaceDelete(path) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
-  if (segments === null) throw new Error(`Invalid workspace path: ${String(path)}`);
+  if (segments === null) throw new Error(workspaceEscapeError(path));
   if (segments.length === 0) {
     throw new Error('Refusing to delete the working directory root');
   }
@@ -236,7 +242,7 @@ export async function workspaceWriteFile(path, content, opts = {}) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
   if (segments === null || segments.length === 0) {
-    throw new Error(`Invalid workspace file path: ${String(path)}`);
+    throw new Error(workspaceEscapeError(path));
   }
   const text = typeof content === 'string' ? content : String(content ?? '');
   const parent = await resolveDirMaybe(handle, segments.slice(0, -1), true);
@@ -253,7 +259,7 @@ export async function workspaceReadFile(path) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
   if (segments === null || segments.length === 0) {
-    throw new Error(`Invalid workspace file path: ${String(path)}`);
+    throw new Error(workspaceEscapeError(path));
   }
   const dir = await resolveDirMaybe(handle, segments.slice(0, -1), false);
   const fileHandle = await dir.getFileHandle(segments[segments.length - 1]);
@@ -267,6 +273,34 @@ export async function workspaceReadFile(path) {
     path: friendlyPath(segments),
     truncated,
     content: truncated ? `${text.slice(0, WORKSPACE_READ_MAX_CHARS)}\n[truncated]` : text,
+  };
+}
+
+/**
+ * Read a file from the working directory into an upload payload
+ * ({ base64, filename, mimeType }) for upload_file's in-memory injection.
+ * Relative paths only — absolute paths, drive letters and ".." are rejected
+ * like every other workspace entry point.
+ */
+export async function workspaceReadUpload(path) {
+  const handle = await requireHandle();
+  const segments = normalizeWorkspacePath(path);
+  if (segments === null || segments.length === 0) {
+    throw new Error(workspaceEscapeError(path));
+  }
+  const dir = await resolveDirMaybe(handle, segments.slice(0, -1), false);
+  const fileHandle = await dir.getFileHandle(segments[segments.length - 1]);
+  const file = await fileHandle.getFile();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return {
+    filename: file.name,
+    base64: btoa(binary),
+    mimeType: file.type || 'application/octet-stream',
   };
 }
 
@@ -298,7 +332,7 @@ export async function workspaceDownload(urls, { subfolder = '' } = {}) {
     return { success: false, error: `Too many URLs (max ${WORKSPACE_DOWNLOAD_MAX})` };
   }
   const subSegments = normalizeWorkspacePath(subfolder);
-  if (subSegments === null) return { success: false, error: `Invalid subfolder: ${subfolder}` };
+  if (subSegments === null) return { success: false, denied: true, error: workspaceEscapeError(subfolder) };
   const targetDir = await resolveDirMaybe(handle, subSegments, true);
 
   const results = new Array(urls.length);
