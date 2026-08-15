@@ -2,9 +2,9 @@ import { ProviderManager } from './providers/manager.js';
 import { Agent } from './agent/agent.js';
 import { PERSONA } from '../persona.js';
 import {
-  saveWorkspaceHandle,
   clearWorkspaceHandle,
   loadWorkspaceHandle,
+  resetWorkspaceHandleCache,
 } from './workspace/workspace-fs.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
@@ -3187,6 +3187,9 @@ async function handleMessage(msg, sender) {
       let permission = 'none';
       if (state) {
         try {
+          // The side panel writes the handle to IndexedDB in its own
+          // context, so always re-read instead of trusting the cache.
+          resetWorkspaceHandleCache();
           const handle = await loadWorkspaceHandle();
           if (handle && typeof handle.queryPermission === 'function') {
             permission = await handle.queryPermission({ mode: 'readwrite' });
@@ -3198,16 +3201,19 @@ async function handleMessage(msg, sender) {
 
     case 'pick_working_directory': {
       // The side panel runs showDirectoryPicker (window-only API) inside a
-      // user gesture and posts the handle here. We persist it in IndexedDB
-      // and mirror the name to chrome.storage.local for prompts + UI.
-      const handle = msg.handle;
+      // user gesture, persists the handle to IndexedDB in its own context
+      // (runtime messaging is JSON-only and cannot carry FileSystemHandle
+      // objects), then posts just the name here. We reload the handle from
+      // IndexedDB and mirror the name to chrome.storage.local for prompts.
+      resetWorkspaceHandleCache();
+      const handle = await loadWorkspaceHandle();
       if (!handle || typeof handle.getDirectoryHandle !== 'function') {
-        return { ok: false, error: 'No directory handle received.' };
+        return { ok: false, error: 'Workspace handle not found in IndexedDB. Pick the folder again.' };
       }
-      await saveWorkspaceHandle(handle);
-      const state = { name: String(handle.name || ''), updatedAt: Date.now() };
+      const name = String(msg.name || handle.name || '');
+      const state = { name, updatedAt: Date.now() };
       await chrome.storage.local.set({ workingDirectory: state });
-      agent.workingDirectoryName = state.name;
+      agent.workingDirectoryName = name;
       agent._refreshSystemPrompts();
       return { ok: true, workingDirectory: state };
     }

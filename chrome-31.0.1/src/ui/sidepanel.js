@@ -21,6 +21,7 @@ import {
   saveChatHistoryRecord,
 } from './chat-history-store.js';
 import { historyTextFromElement } from './history-text.js';
+import { saveWorkspaceHandle } from '../workspace/workspace-fs.js';
 import { claimRunError } from './run-error-dedupe.js';
 import { RUN_CAPTURE_START_ERROR_PREFIX } from '../run-capture.js';
 import { runUiUnavailableBeforeSeq } from '../run-ui-journal.js';
@@ -6658,7 +6659,11 @@ async function loadWorkingDirState() {
 workingDirBtn?.addEventListener('click', async () => {
   try {
     const handle = await showDirectoryPicker({ id: 'webbrain-working-dir', mode: 'readwrite' });
-    const res = await sendToBackground('pick_working_directory', { handle });
+    // chrome.runtime messaging serializes with JSON and silently drops
+    // FileSystemHandle objects, so persist the handle here (window context,
+    // same-origin IndexedDB) and send only the name across the message bus.
+    await saveWorkspaceHandle(handle);
+    const res = await sendToBackground('pick_working_directory', { name: String(handle.name || '') });
     if (res?.ok === false) throw new Error(res?.error || 'pick failed');
     workingDirState = res.workingDirectory || null;
     workingDirPermission = 'granted';

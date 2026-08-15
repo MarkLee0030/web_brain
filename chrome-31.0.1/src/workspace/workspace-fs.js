@@ -88,6 +88,15 @@ export async function loadWorkspaceHandle() {
   return cachedHandle;
 }
 
+// Drops the in-memory cache so the next loadWorkspaceHandle() re-reads the
+// handle from IndexedDB. Needed because the side panel writes the handle to
+// IndexedDB in its own context (chrome.runtime messaging is JSON-only and
+// cannot carry FileSystemHandle objects), so this context's cache can be
+// stale after a re-pick.
+export function resetWorkspaceHandleCache() {
+  cachedHandle = null;
+}
+
 export async function clearWorkspaceHandle() {
   cachedHandle = null;
   await idbDelete(HANDLE_KEY).catch(() => {});
@@ -116,6 +125,21 @@ async function requireHandle() {
     throw new Error(
       'No working directory selected. Ask the user to pick one with the folder button in the WebBrain side panel header.',
     );
+  }
+  // Chrome revokes the readwrite permission across extension reloads and
+  // browser restarts; the handle then exists but every operation throws
+  // NotAllowedError. Surface an actionable message instead of a raw error.
+  try {
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') {
+      throw new Error(
+        'The working directory permission needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts). Ask the user to click the folder button in the WebBrain side panel header once to re-grant it.',
+      );
+    }
+  } catch (e) {
+    if (e && e.message && e.message.includes('needs re-authorization')) throw e;
+    // queryPermission unavailable/other error: fall through and let the
+    // operation itself report any permission problem.
   }
   return handle;
 }
