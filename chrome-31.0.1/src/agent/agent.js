@@ -1,4 +1,7 @@
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX, SYSTEM_PROMPT_WEBMCP_ASK, SYSTEM_PROMPT_WEBMCP_ACT, LOCAL_DEPLOYMENT_NOTE } from './tools.js';
+// Durable conversation mirror (continue-from-history). Cleared at compaction
+// time so the mirror only ever holds the post-compaction state.
+import { clearAgentConversation } from '../ui/chat-history-store.js';
 import { validateToolArguments } from './tool-arguments.js';
 import { isSessionQuotaError, serializeConversationForSession, SESSION_CONVERSATION_BUDGET_BYTES, SESSION_CONVERSATION_RETRY_BUDGET_BYTES } from './conversation-persistence.js';
 import { formatErrorMessage } from '../error-format.js';
@@ -16037,10 +16040,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     // Arm the hysteresis cooldown: skip soft triggers for the next 2 steps.
     this._compactCooldown.set(tabId, 2);
-    // Persist the POST-compaction conversation right away: the durable
-    // mirror (and "continue from history") must capture the latest
-    // compaction's summary + subsequent messages, never the discarded
-    // pre-compaction history.
+    // Durable-mirror hygiene: clear this conversation's stored copy, then
+    // persist — the mirror is repopulated with ONLY the post-compaction
+    // state, so every session's mirror stays small and "continue from
+    // history" restores exactly what the model knew at the end.
+    const compactedConvId = this.conversationIds.get(tabId);
+    if (compactedConvId) {
+      clearAgentConversation(compactedConvId).catch(() => {});
+    }
     this._persist(tabId);
 
     console.log(`[WebBrain] Context trimmed for tab ${tabId}: ${oldMessages.length} old messages → summary. ${messages.length} messages remain.`);
@@ -16941,9 +16948,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.push(notice, ack, ...recent);
 
     console.log(`[WebBrain] Emergency context trim: kept ${messages.length} messages.`);
-    // Same durable-mirror rule as _manageContext: the persisted copy must be
-    // the post-trim state, not the discarded pre-trim history.
-    if (tabId != null) this._persist(tabId);
+    // Same durable-mirror rule as _manageContext: clear the stored copy so
+    // the repopulated mirror holds only the post-trim state.
+    if (tabId != null) {
+      const trimmedConvId = this.conversationIds.get(tabId);
+      if (trimmedConvId) clearAgentConversation(trimmedConvId).catch(() => {});
+      this._persist(tabId);
+    }
   }
 
   /**

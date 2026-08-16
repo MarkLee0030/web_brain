@@ -61,6 +61,7 @@ import { createTabChatHandoffCoordinator } from './ui/tab-chat-persistence.js';
 import {
   getChatHistoryRecord,
   loadAgentConversation,
+  pruneAgentConversations,
   saveAgentConversation,
   saveChatHistoryRecord,
 } from './ui/chat-history-store.js';
@@ -407,6 +408,10 @@ async function loadPersona() {
   agent.personaText = typeof stored.personaText === 'string' ? stored.personaText : '';
 }
 loadPersona();
+
+// Bound the durable conversation-mirror store: keep only the most recently
+// updated sessions (per-session mirrors are already trimmed at compaction).
+pruneAgentConversations().catch(() => {});
 
 // Working directory: the user-picked sandboxed folder for the workspace_*
 // tools. The FileSystemDirectoryHandle itself persists in IndexedDB

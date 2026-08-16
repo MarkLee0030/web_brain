@@ -321,3 +321,38 @@ export async function loadAgentConversation(conversationId) {
     return null;
   }
 }
+
+/**
+ * Drop a conversation's mirrored copy. Called when auto-compaction (or an
+ * emergency trim) rebuilds the conversation, so the durable mirror only ever
+ * holds the post-compaction state — each session's mirror stays small.
+ */
+export async function clearAgentConversation(conversationId) {
+  if (!conversationId) return;
+  try {
+    const db = await openDB();
+    await promisifyReq(
+      tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME).delete(String(conversationId)),
+    );
+  } catch { /* best effort */ }
+}
+
+/**
+ * Keep only the `keep` most recently updated mirrored conversations —
+ * bounds the store's total size across sessions (service-worker startup
+ * calls this once).
+ */
+export async function pruneAgentConversations(keep = 200) {
+  try {
+    const db = await openDB();
+    const all = await promisifyReq(tx(db).objectStore(CONVERSATION_STORE_NAME).getAll());
+    if (!Array.isArray(all) || all.length <= keep) return;
+    const stale = all
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(keep);
+    const write = tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME);
+    await Promise.all(
+      stale.map((entry) => entry?.conversationId && promisifyReq(write.delete(String(entry.conversationId)))),
+    );
+  } catch { /* best effort */ }
+}
