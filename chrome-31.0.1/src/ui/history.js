@@ -16,6 +16,7 @@ const countPill = document.getElementById('count-pill');
 const filterText = document.getElementById('filter-text');
 const filterClear = document.getElementById('filter-clear');
 const btnRefresh = document.getElementById('btn-refresh');
+const btnContinue = document.getElementById('btn-continue');
 const btnExport = document.getElementById('btn-export');
 const btnDelete = document.getElementById('btn-delete');
 const btnClearAll = document.getElementById('btn-clear-all');
@@ -41,7 +42,56 @@ function refreshButtons() {
   const hasSelection = !!selectedRecordId;
   btnExport.disabled = !hasSelection;
   btnDelete.disabled = !hasSelection;
+  if (btnContinue) btnContinue.disabled = !hasSelection;
 }
+
+function sendToBackground(action, data = {}) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action, ...data }, (response) => {
+      if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+      else resolve(response);
+    });
+  });
+}
+
+async function continueSelectedConversation() {
+  if (!selectedRecordId) return;
+  const record = await getChatHistoryRecord(selectedRecordId);
+  if (!record) return;
+  btnContinue.disabled = true;
+  try {
+    // Prefer the record's original tab when it still exists; otherwise
+    // continue in the active tab of the current window.
+    let tabId = null;
+    try {
+      const original = await chrome.tabs.get(Number(record.tabId));
+      if (original && original.id != null) tabId = original.id;
+    } catch { /* original tab closed */ }
+    if (tabId == null) {
+      const active = await chrome.tabs.query({ active: true, currentWindow: true });
+      tabId = active && active[0] ? active[0].id : null;
+    }
+    if (tabId == null) {
+      btnContinue.textContent = t('hist.btn.continue.error');
+      setTimeout(refreshButtons, 2000);
+      return;
+    }
+    const res = await sendToBackground('continue_conversation', { recordId: record.id, tabId });
+    if (res?.ok) {
+      btnContinue.textContent = t('hist.btn.continue.done');
+    } else {
+      btnContinue.textContent = t('hist.btn.continue.error');
+    }
+  } catch {
+    btnContinue.textContent = t('hist.btn.continue.error');
+  }
+  setTimeout(() => {
+    refreshButtons();
+    if (selectedRecordId) btnContinue.textContent = t('hist.btn.continue');
+  }, 2500);
+}
+
+btnContinue?.addEventListener('click', continueSelectedConversation);
 
 function clearFilterQueryParam() {
   try {

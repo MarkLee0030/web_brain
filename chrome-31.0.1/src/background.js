@@ -58,6 +58,12 @@ import {
   selectionTranslationLanguageLabel,
 } from './selection-shortcut-i18n.js';
 import { createTabChatHandoffCoordinator } from './ui/tab-chat-persistence.js';
+import {
+  getChatHistoryRecord,
+  loadAgentConversation,
+  saveAgentConversation,
+  saveChatHistoryRecord,
+} from './ui/chat-history-store.js';
 import { clearStagedScreenshots } from './ui/staged-screenshot-store.js';
 import {
   prepareRecordingHost,
@@ -998,6 +1004,20 @@ chrome.runtime.onStartup?.addListener(async () => {
 
 // Listen for setting changes
 chrome.storage.onChanged.addListener((changes) => {
+  // Mirror agent conversations (storage.session) into IndexedDB keyed by
+  // conversationId, so "continue this conversation" from history works
+  // after browser restarts (storage.session does not survive them).
+  for (const key of Object.keys(changes)) {
+    if (key.startsWith('agentConv:')) {
+      const tabId = Number(key.slice('agentConv:'.length));
+      const messages = agent.conversations.get(tabId);
+      const conversationId = agent.conversationIds.get(tabId);
+      if (Number.isFinite(tabId) && Array.isArray(messages) && conversationId) {
+        saveAgentConversation(conversationId, messages).catch(() => {});
+      }
+      break;
+    }
+  }
   if (changes.wbLocale) {
     selectionShortcutLocale = normalizeSelectionShortcutLocale(changes.wbLocale.newValue);
     createContextMenus().catch(() => {});
@@ -3091,6 +3111,45 @@ async function handleMessage(msg, sender) {
         }).catch(() => {});
       }
       return result;
+    }
+
+    case 'continue_conversation': {
+      const tabId = Number(msg.tabId);
+      if (!Number.isFinite(tabId)) return { ok: false, error: 'No target tab for continue' };
+      const record = await getChatHistoryRecord(msg.recordId);
+      if (!record) return { ok: false, error: 'History record not found' };
+      let restoredAgent = false;
+      if (record.conversationId) {
+        const stored = await loadAgentConversation(record.conversationId);
+        if (Array.isArray(stored) && stored.length > 1) {
+          const res = await agent.restoreConversation(
+            tabId,
+            stored,
+            record.mode || 'ask',
+            record.conversationId,
+          );
+          restoredAgent = res?.ok === true;
+        }
+      }
+      if (typeof record.html === 'string' && record.html.trim()) {
+        tabChatHandoff.save(tabId, record.html, { ownerId: '' }).catch(() => {});
+      }
+      if (Number.isFinite(Number(record.tabId)) && Number(record.tabId) !== tabId) {
+        // Re-key the record to the tab it continues in, so future turns keep
+        // appending to this record instead of forking a new one.
+        await saveChatHistoryRecord({ ...record, tabId }).catch(() => {});
+      }
+      // Tell any open side panel for this tab to reload its chat + identity.
+      chrome.runtime.sendMessage({ target: 'sidepanel', action: 'tab_chat_continue', tabId }).catch(() => {});
+      let panelOpened = false;
+      try {
+        // Runs inside the user gesture of the history-page click.
+        await chrome.sidePanel.open({ tabId });
+        panelOpened = true;
+      } catch {
+        try { await chrome.tabs.update(tabId, { active: true }); } catch { /* best effort */ }
+      }
+      return { ok: true, restoredAgent, panelOpened, conversationId: record.conversationId || null };
     }
 
     case 'list_scheduled_jobs': {

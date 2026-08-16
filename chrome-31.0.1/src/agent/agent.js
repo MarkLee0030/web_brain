@@ -1191,6 +1191,26 @@ export class Agent extends LoopDetector {
   }
 
   /**
+   * Replace a tab's conversation with a restored one ("continue this
+   * conversation" from history). Reuses the ORIGINAL conversationId so
+   * future turns keep writing into the same history record, and persists
+   * the restored messages to storage.session immediately so the restore
+   * survives service-worker restarts for the rest of the browser session.
+   */
+  async restoreConversation(tabId, messages, mode = 'ask', conversationId = null) {
+    if (tabId == null || !Array.isArray(messages) || messages.length === 0) {
+      return { ok: false, error: 'restoreConversation needs a tab and a non-empty message array' };
+    }
+    this.conversations.set(tabId, messages);
+    this.conversationModes.set(tabId, mode === 'dev' ? 'dev' : (mode === 'act' ? 'act' : 'ask'));
+    this._conversationMode = mode === 'dev' ? 'dev' : (mode === 'act' ? 'act' : 'ask');
+    if (conversationId) this.conversationIds.set(tabId, String(conversationId));
+    this.hydratedTabs.add(tabId);
+    await this._persistNow(tabId);
+    return { ok: true, conversationId: this.conversationIds.get(tabId) || null };
+  }
+
+  /**
    * Snapshot the effective runtime settings for a run. Anything we cannot
    * observe is omitted rather than guessed: an absent field reads as "unknown"
    * in a dump, while a hard `false`/'ask' would assert a setting the run never

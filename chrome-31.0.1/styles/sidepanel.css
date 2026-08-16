@@ -3069,6 +3069,39 @@ html[data-standalone="true"] #mode-toggle {
   overflow: hidden;
 }
 
+/* GFM tables rendered from Markdown pipe tables */
+.md-table-wrapper {
+  margin: 8px 0;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.md-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 12px;
+}
+.md-table th,
+.md-table td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th:last-child,
+.md-table td:last-child {
+  border-right: none;
+}
+.md-table tr:last-child td {
+  border-bottom: none;
+}
+.md-table th {
+  background: var(--overlay-bg-strong);
+  font-weight: 600;
+}
+
 .code-block-header {
   display: flex;
   align-items: center;

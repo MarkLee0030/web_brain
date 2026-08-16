@@ -2509,6 +2509,9 @@ async function persistChatHistorySnapshot(tabId, { refreshTabInfo = false } = {}
     createdAt: chatHistoryCreatedAtByTab.get(numericTabId),
     updatedAt: Date.now(),
     messages,
+    // Rendered chat HTML — what the history page's "continue" restores
+    // verbatim into the target tab's side panel.
+    html: messagesEl.innerHTML,
   }).catch((error) => {
     console.warn('[WebBrain] failed to save chat history:', error);
   });
@@ -8616,6 +8619,25 @@ chrome.runtime.onMessage.addListener((msg) => {
   requestVisibleSidePanelStateRefresh();
 });
 
+// "Continue this conversation" from the history page: the tab's chat and
+// conversation identity were replaced server-side. Drop the cached HTML and
+// identity so the next hydration picks up the restored record's
+// conversationId (future saves append to that record, not a new one).
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel'
+      || msg.action !== 'tab_chat_continue'
+      || document.visibilityState === 'hidden'
+      || !sameTabId(currentTabId, msg.tabId)) return;
+  tabChats.delete(Number(msg.tabId));
+  if (lastVisibleTabChatSnapshot
+      && sameTabId(lastVisibleTabChatSnapshot.tabId, msg.tabId)) {
+    lastVisibleTabChatSnapshot = null;
+  }
+  chatHistoryConversationIdsByTab.delete(Number(msg.tabId));
+  chatHistoryRecordIdsByTab.delete(Number(msg.tabId));
+  requestVisibleSidePanelStateRefresh();
+});
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     visibleStateRefreshPending = false;
@@ -11218,6 +11240,80 @@ function scheduleMathRender() {
   }, 50);
 }
 
+// Split one GFM table row into cells (trims the outer pipes, honors escaped
+// \| pipes inside cells).
+function splitTableRow(line) {
+  let s = String(line || '').trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s
+    .replace(/\\\|/g, '__ESCPIPE__')
+    .split('|')
+    .map((cell) => cell.trim().replace(/__ESCPIPE__/g, '|'));
+}
+
+// Detect header + separator + body blocks and replace each with a placeholder;
+// the real <table> HTML is built by renderMarkdownTable after the main passes.
+function extractMarkdownTables(text, tables) {
+  const lines = text.split('\n');
+  const out = [];
+  const isSeparatorRow = (line) => {
+    const cells = splitTableRow(line);
+    return cells.length > 0 && cells.every((cell) => /^:?-{1,}:?$/.test(cell));
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.includes('|') && i + 1 < lines.length && isSeparatorRow(lines[i + 1])) {
+      const block = [line, lines[i + 1]];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        block.push(lines[i]);
+        i += 1;
+      }
+      tables.push(block.join('\n'));
+      out.push(`__TABLE_${tables.length - 1}__`);
+    } else {
+      out.push(line);
+      i += 1;
+    }
+  }
+  return out.join('\n');
+}
+
+// Build the <table> HTML for one extracted block. Cells were HTML-escaped by
+// the main pass; inline code/bold/italic/links are re-applied per cell so
+// table content keeps normal chat formatting.
+function renderMarkdownTable(raw) {
+  const lines = String(raw || '').split('\n').filter((line) => line.trim() !== '');
+  if (lines.length < 2) return escapeHtml(raw);
+  const header = splitTableRow(lines[0]);
+  const aligns = splitTableRow(lines[1]).map((cell) => {
+    const trimmed = cell.trim();
+    if (trimmed.startsWith(':') && trimmed.endsWith(':')) return 'center';
+    if (trimmed.endsWith(':')) return 'right';
+    if (trimmed.startsWith(':')) return 'left';
+    return '';
+  });
+  const inline = (cell) => sanitizeMarkdownLinks(
+    cell
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>'),
+  );
+  const alignAttr = (idx) => (aligns[idx] ? ` style="text-align:${aligns[idx]}"` : '');
+  const headerHtml = header
+    .map((cell, idx) => `<th${alignAttr(idx)}>${inline(cell)}</th>`)
+    .join('');
+  const bodyHtml = lines.slice(2)
+    .map((line) => {
+      const row = splitTableRow(line);
+      return `<tr>${row.map((cell, idx) => `<td${alignAttr(idx)}>${inline(cell)}</td>`).join('')}</tr>`;
+    })
+    .join('');
+  return `<div class="md-table-wrapper"><table class="md-table"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+}
+
 function formatMarkdown(text, options = {}) {
   if (!text) return '';
   const enhance = options.enhance !== false;
@@ -11245,6 +11341,12 @@ function formatMarkdown(text, options = {}) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
+  // 3.5 Extract GFM pipe tables (header | separator | body) before the
+  // newline→<br> pass can tear them apart; each block is rendered as a real
+  // <table> afterwards.
+  const tables = [];
+  text = extractMarkdownTables(text, tables);
+
   // 4. Block headings, inline formatting, markdown link sanitization, then
   // newline → <br>. Code and inline-code placeholders were extracted above,
   // so Markdown-looking source inside them is not interpreted here.
@@ -11254,6 +11356,11 @@ function formatMarkdown(text, options = {}) {
     .replace(/\*(.+?)\*/g, '<em>$1</em>');
   text = sanitizeMarkdownLinks(text);
   text = text.replace(/\n/g, '<br>');
+
+  // 4.5 Restore tables as real <table> elements
+  tables.forEach((table, i) => {
+    text = text.replace(`__TABLE_${i}__`, () => renderMarkdownTable(table));
+  });
 
   // 5. Restore inline code
   inlineCodes.forEach((code, i) => {

@@ -1,6 +1,7 @@
 const DB_NAME = 'webbrain_chat_history';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'records';
+const CONVERSATION_STORE_NAME = 'agentConversations';
 
 let dbPromise = null;
 
@@ -16,6 +17,9 @@ function openDB() {
         store.createIndex('createdAt', 'createdAt');
         store.createIndex('conversationId', 'conversationId');
         store.createIndex('url', 'url');
+      }
+      if (!db.objectStoreNames.contains(CONVERSATION_STORE_NAME)) {
+        db.createObjectStore(CONVERSATION_STORE_NAME, { keyPath: 'conversationId' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -125,6 +129,10 @@ function normalizeRecord(input, existing = null) {
     lastAssistantMessage: lastText(messages, 'assistant'),
   };
   record.title = buildTitle(record, messages);
+  // Rendered chat HTML for the "continue this conversation" flow (existing
+  // spread keeps the previous snapshot when the caller doesn't pass one).
+  if (typeof input?.html === 'string') record.html = input.html;
+  else if (!record.html) record.html = '';
   return record;
 }
 
@@ -266,4 +274,50 @@ export async function deleteChatHistoryRecord(id) {
 export async function clearChatHistoryRecords() {
   const db = await openDB();
   await promisifyReq(tx(db, 'readwrite').objectStore(STORE_NAME).clear());
+}
+
+const AGENT_CONVERSATION_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Persist a tab's full agent conversation (system + user + assistant +
+ * tool messages) under its conversationId so a history record can be
+ * continued after a browser restart — chrome.storage.session, where the
+ * live copy lives, does not survive restarts. Oversized conversations are
+ * trimmed from the front (keeping the system message and the most recent
+ * messages).
+ */
+export async function saveAgentConversation(conversationId, messages) {
+  if (!conversationId || !Array.isArray(messages) || messages.length === 0) return false;
+  const db = await openDB();
+  const trimmed = [messages[0]];
+  for (const message of messages.slice(1).reverse()) {
+    trimmed.splice(1, 0, message);
+    const size = JSON.stringify({ conversationId, messages: trimmed }).length;
+    // Over budget: drop the OLDEST kept message (index 1), never the
+    // system message at index 0.
+    if (size > AGENT_CONVERSATION_MAX_BYTES) trimmed.splice(1, 1);
+  }
+  await promisifyReq(
+    tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME)
+      .put({ conversationId: String(conversationId), messages: trimmed, updatedAt: Date.now() }),
+  );
+  return true;
+}
+
+/**
+ * Load the agent conversation previously saved for a history record's
+ * conversationId. Returns null when no copy exists (e.g. records created
+ * before this feature).
+ */
+export async function loadAgentConversation(conversationId) {
+  if (!conversationId) return null;
+  try {
+    const db = await openDB();
+    const entry = await promisifyReq(
+      tx(db).objectStore(CONVERSATION_STORE_NAME).get(String(conversationId)),
+    );
+    return entry && Array.isArray(entry.messages) ? entry.messages : null;
+  } catch {
+    return null;
+  }
 }
