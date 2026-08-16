@@ -181,6 +181,10 @@ const TOOL_CAPABILITY = {
   workspace_mkdir: Capability.FILESYSTEM,
   workspace_delete: Capability.FILESYSTEM,
   workspace_write_file: Capability.FILESYSTEM,
+  // Copying INTO the working directory writes to it (FILESYSTEM); reading the
+  // source is covered by the user's explicit whitelist grant in Settings.
+  workspace_copy_in: Capability.FILESYSTEM,
+  workspace_extract: Capability.FILESYSTEM,
   schedule_resume: Capability.SCHEDULE,
   schedule_task: Capability.SCHEDULE,
 };

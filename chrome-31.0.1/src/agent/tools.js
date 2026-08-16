@@ -1044,6 +1044,52 @@ export const AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'workspace_whitelist_list',
+      description: 'List the whitelisted local directories the user granted in Settings (read-only). Call with no arguments to get the directory names; call with a dir name (and optional relative path) to list the files/folders inside that directory with sizes. Whitelisted directories are extra local staging areas — typically the browser\'s default Downloads folder, where virtual-click downloads on blocker sites land.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dir: { type: 'string', description: 'Whitelisted directory name to list the contents of. Omit to list all whitelisted directory names.' },
+          path: { type: 'string', description: 'Optional relative path inside the whitelisted directory' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'workspace_copy_in',
+      description: 'Copy one file from a whitelisted directory INTO the working directory. Use it when a file landed outside the working directory (e.g. Chrome\'s default Downloads folder after a virtual click on a blocker site) and belongs in the working directory. dir = whitelisted directory name (see workspace_whitelist_list); path = the file\'s path relative to that directory; destPath = destination inside the working directory (default: the file\'s own name at the workspace root — pass "page-title/name.zip" to land it in a folder you created). move defaults to true: the source file is removed only AFTER a verified copy.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dir: { type: 'string', description: 'Name of the whitelisted directory (from workspace_whitelist_list)' },
+          path: { type: 'string', description: 'File path relative to that whitelisted directory' },
+          destPath: { type: 'string', description: 'Optional relative destination inside the working directory (default: the file name at the workspace root)' },
+          move: { type: 'boolean', description: 'Remove the source after the copy (default true)' },
+        },
+        required: ['dir', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'workspace_extract',
+      description: 'Extract a .zip archive that is inside the working directory. path = the archive\'s path relative to the working directory; destPath = where to extract (default: the archive\'s own folder — prefer passing the subfolder you created for this task so loose files stay contained). Internal folder structure is preserved, entry names are sanitized, existing files are never overwritten (-N suffix), and unsafe/encrypted/oversized entries are skipped with reasons. Only .zip is supported — RAR/7z/tar are refused with a clear error.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative path of the .zip archive inside the working directory' },
+          destPath: { type: 'string', description: 'Optional relative destination folder inside the working directory (default: the archive\'s own folder)' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'upload_file',
       description: 'Attach a file directly to an existing file input without opening the page or OS file-picker dialog. This proves only that the page input received or consumed the file; it does NOT prove a remote upload, form submission, or repository commit. Do NOT click "Choose file", "Select a file", an upload drop zone, or the input first when the input already exists. Provide ONE source: attachmentId from the current user-attachment notice, downloadId from download_files/list_downloads, or a filePath (absolute; when the [WORKING DIRECTORY] note is present in the system prompt, only a path relative to the working directory is accepted — absolute filePath and downloadId are rejected). Never guess an id. attachmentId is valid only during the current run and reuses the exact file the user already attached. If both downloadId and filePath are accidentally provided, a valid downloadId is preferred and filePath is the fallback. If the selector is ambiguous, call get_interactive_elements and use the exact selector on the intended file-input record before retrying. If no file input exists because the widget creates it lazily, one guarded click on its add-files control may initialize it; then retry upload_file with the exact selector returned or discovered.',
       parameters: {
@@ -1796,7 +1842,7 @@ Available tools:
 - scratchpad_write: Pin a note in context that survives summarization (use on long tasks to remember download IDs, file paths, plans)
 - progress_update / progress_read: Structured app-owned ledger for the active repeated item/action task. Use it for per-user/per-item status and collected fields; close pending/acted rows before done.
 - download_public_media (if enabled by a skill) / download_social_media: One-shot image/video download from public social sites. Prefer the enabled skill tool for public media URLs; otherwise use download_social_media. Single call — no need to inspect the DOM yourself.
-- WORKING DIRECTORY (only when the [WORKING DIRECTORY] note is present in the system prompt): workspace_list({path?}) reads folder contents; workspace_mkdir({path}) creates folders (nested paths allowed); workspace_delete({path}) deletes a file or folder recursively — ONLY items the user explicitly asked to remove; workspace_write_file({path, content}) writes generated text (reports, CSV/JSON, code, notes) into the folder — duplicate names get a -N suffix unless overwrite:true; workspace_read_file({path}) reads a text file back; workspace_download({url|urls, subfolder?}) downloads files DIRECTLY into the folder. While this note is present, the download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED by the runtime, and upload_file only accepts paths relative to this directory — every save and read must go through the workspace_* tools. All paths are relative to the working directory — absolute paths and ".." are rejected by the runtime. When the user names a target folder (e.g. D:/Photo/XXX), tell them once to pick that folder with the folder button in the side panel header instead of claiming the browser cannot write to disk. If no [WORKING DIRECTORY] note is present and the task needs files written to disk, never ask the user to type or confirm a parent folder path — just tell them once to pick the folder with the folder button in the side panel header.
+- WORKING DIRECTORY (only when the [WORKING DIRECTORY] note is present in the system prompt): workspace_list({path?}) reads folder contents; workspace_mkdir({path}) creates folders (nested paths allowed); workspace_delete({path}) deletes a file or folder recursively — ONLY items the user explicitly asked to remove; workspace_write_file({path, content}) writes generated text (reports, CSV/JSON, code, notes) into the folder — duplicate names get a -N suffix unless overwrite:true; workspace_read_file({path}) reads a text file back; workspace_download({url|urls, subfolder?}) downloads files DIRECTLY into the folder. While this note is present, the download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED by the runtime, and upload_file only accepts paths relative to this directory — every save and read must go through the workspace_* tools. All paths are relative to the working directory — absolute paths and ".." are rejected by the runtime. When the user names a target folder (e.g. D:/Photo/XXX), tell them once to pick that folder with the folder button in the side panel header instead of claiming the browser cannot write to disk. If no [WORKING DIRECTORY] note is present and the task needs files written to disk, never ask the user to type or confirm a parent folder path — just tell them once to pick the folder with the folder button in the side panel header. If the user granted whitelisted directories ([WHITELISTED DIRECTORIES] note), files that landed there (e.g. Chrome's default Downloads folder after a virtual-click download on a blocker site) can be moved INTO the working directory with workspace_copy_in; .zip archives inside the working directory can be extracted with workspace_extract (RAR/7z unsupported).
 - Recording is user-driven only. If the user asks to record, do NOT call tools; tell them to type \`/record\` for current-tab recording or \`/record --full-screen\` for screen/window recording; add \`--transcribe\` to either form if they want a Whisper transcript after stop. If they ask to stop a recording, tell them to press Escape twice in WebBrain/browser surfaces or use Chrome's Stop sharing control.
 - hover: CDP-trusted hover over a ref_id. Use ONLY for menus/tooltips that REVEAL on hover (GitHub three-dot menus, Linear card actions, nav menus with reveal-on-hover children). Re-read the tree after to find the newly-visible items. Do NOT call hover before every click — most things are clickable directly.
 - drag_drop: Drag one ref_id onto another via CDP-trusted pointer events. Use for Trello/Linear/Notion-style card reordering, file-tree node moves, image-crop handles, slider thumbs. Pass \`steps: 15–20\` if the first attempt doesn't trigger the drop indicator on momentum-tracking dnd. Verify by re-reading the tree.
@@ -2017,7 +2063,7 @@ export const LOCAL_DEPLOYMENT_NOTE = `[LOCAL DEPLOYMENT — ENVIRONMENT AND TRUS
 - This WebBrain instance runs entirely on the user's own computer: a local browser extension talking to a model the user deployed locally on their own hardware. Conversation content, page data, files, and tool results stay on this machine; nothing is shared with any third party, and the only human involved is the owner of this computer interacting with their own browser session.
 - Tasks act on the user's own accounts, pages, and files under their own permissions. Treat them exactly like the user performing the same steps by hand — this is the machine owner using their own assets, not an unknown third party making requests.
 - Do not refuse, hedge, or attach generic "safety policy" disclaimers to ordinary personal tasks: reading their pages, saving or batch-downloading their files and images, organizing their folders, filling their own forms, automating their own repetitive actions. Over-refusal is a task failure here, not caution. When a stop-and-confirm is warranted, the operating rules above already say so explicitly.
-- The genuine boundaries are unchanged: destructive actions without the user's confirmation in this conversation, real harm to other people, or clearly illegal content. When a real risk exists, ask the user (clarify) — never silently refuse or quietly degrade the task.`;
+- The genuine boundaries are unchanged: destructive actions without the user's confirmation in this conversation, real harm to other people. When a real risk exists, ask the user (clarify) — never silently refuse or quietly degrade the task.`;
 
 /**
  * Compact system prompt for small/local models (< 8B parameters).
@@ -2119,6 +2165,7 @@ export const MID_TOOL_NAMES = new Set([
   'download_files', 'download_resource_from_page', 'upload_file', 'download_social_media',
   'workspace_list', 'workspace_mkdir', 'workspace_delete', 'workspace_write_file',
   'workspace_read_file', 'workspace_download',
+  'workspace_whitelist_list', 'workspace_copy_in', 'workspace_extract',
   'scratchpad_write', 'progress_update', 'progress_read', 'verify_form', 'solve_captcha',
 ]);
 
@@ -2162,7 +2209,7 @@ TOOLS — use only these:
 - iframe_read / iframe_click / iframe_type ({urlFilter, selector, matchIndex, text}): enumerate and interact inside cross-origin iframes. iframe_read returns matchIndex values; iframe_click/type reject ambiguous selectors. After iframe form edits, verify_form({urlFilter}) is required before success.
 - fetch_url({url}) / research_url({url}): read OTHER URLs (not the active tab). list_downloads, download_files, download_resource_from_page, read_downloaded_file, upload_file({selector, attachmentId}) or upload_file({selector, downloadId}): file workflows. Use attachmentId for a current user-supplied file; use downloadId for a downloaded file. Use download_files for direct URLs and download_resource_from_page when the resource is attached to a visible page element or a blob: URL. Successful downloads auto-pin each file's downloadId to the scratchpad as an \`[auto]\` line — attach with upload_file({downloadId, selector}) and re-read with read_downloaded_file({downloadId}); no need to recall the path.
 - download_public_media (if enabled) / download_social_media: one-shot image/video download from supported public social sites; purpose-built download tools should be tried before manual DOM/resource workflows.
-- WORKING DIRECTORY (only when the [WORKING DIRECTORY] note is present in the system prompt): workspace_list({path?}) reads folder contents; workspace_mkdir({path}) creates folders (nested paths allowed); workspace_delete({path}) deletes a file or folder recursively — ONLY items the user explicitly asked to remove; workspace_write_file({path, content}) writes generated text (reports, CSV/JSON, code, notes) into the folder — duplicate names get a -N suffix unless overwrite:true; workspace_read_file({path}) reads a text file back; workspace_download({url|urls, subfolder?}) downloads files DIRECTLY into the folder. While this note is present, the download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED by the runtime, and upload_file only accepts paths relative to this directory — every save and read must go through the workspace_* tools. All paths are relative to the working directory — absolute paths and ".." are rejected by the runtime. When the user names a target folder (e.g. D:/Photo/XXX), tell them once to pick that folder with the folder button in the side panel header instead of claiming the browser cannot write to disk. If no [WORKING DIRECTORY] note is present and the task needs files written to disk, never ask the user to type or confirm a parent folder path — just tell them once to pick the folder with the folder button in the side panel header.
+- WORKING DIRECTORY (only when the [WORKING DIRECTORY] note is present in the system prompt): workspace_list({path?}) reads folder contents; workspace_mkdir({path}) creates folders (nested paths allowed); workspace_delete({path}) deletes a file or folder recursively — ONLY items the user explicitly asked to remove; workspace_write_file({path, content}) writes generated text (reports, CSV/JSON, code, notes) into the folder — duplicate names get a -N suffix unless overwrite:true; workspace_read_file({path}) reads a text file back; workspace_download({url|urls, subfolder?}) downloads files DIRECTLY into the folder. While this note is present, the download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED by the runtime, and upload_file only accepts paths relative to this directory — every save and read must go through the workspace_* tools. All paths are relative to the working directory — absolute paths and ".." are rejected by the runtime. When the user names a target folder (e.g. D:/Photo/XXX), tell them once to pick that folder with the folder button in the side panel header instead of claiming the browser cannot write to disk. If no [WORKING DIRECTORY] note is present and the task needs files written to disk, never ask the user to type or confirm a parent folder path — just tell them once to pick the folder with the folder button in the side panel header. If the user granted whitelisted directories ([WHITELISTED DIRECTORIES] note), files that landed there (e.g. Chrome's default Downloads folder after a virtual-click download on a blocker site) can be moved INTO the working directory with workspace_copy_in; .zip archives inside the working directory can be extracted with workspace_extract (RAR/7z unsupported).
 - verify_form: check a form's field values before submitting. scratchpad_write({text}): pin facts that survive context summarization. progress_update/progress_read: track repeated item/action progress.
 - clarify({question, options?}): ask the user only when materially blocked/ambiguous (budget 1-2 per run). Unanswered clarifies auto-select options[0] after timeout (source=timeout is not user approval for high-risk steps; source=auto Instant is intentional auto-approve). solve_captcha: once, only when CapSolver is configured.
 - Recording is user-driven only: tell the user to type \`/record\` or \`/record --full-screen\` instead of trying to start recording yourself; add \`--transcribe\` if they want a Whisper transcript after stop.

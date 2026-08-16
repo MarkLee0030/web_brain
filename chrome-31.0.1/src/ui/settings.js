@@ -7,6 +7,7 @@ import { escapeHtml } from './utils.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
 import { renderSkillMarkdown } from './skill-markdown.js';
 import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
+import { saveWhitelistHandle } from '../workspace/workspace-fs.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
   DEFAULT_SKILL_SOURCES,
@@ -186,6 +187,8 @@ const captchaTestResult = document.getElementById('test-captcha');
 const languageSelect = document.getElementById('select-language');
 const themeSelect = document.getElementById('select-theme');
 const downloadDirectoryInput = document.getElementById('input-download-directory');
+const whitelistAddBtn = document.getElementById('btn-add-whitelist-dir');
+const whitelistListEl = document.getElementById('workspace-whitelist-list');
 const subtitleEl = document.getElementById('subtitle');
 
 // --- Appearance / theme ---
@@ -1237,6 +1240,75 @@ downloadDirectoryInput?.addEventListener('change', async () => {
   downloadDirectoryInput.value = directory;
   await chrome.storage.local.set({ [DOWNLOAD_DIRECTORY_STORAGE_KEY]: directory }).catch(() => {});
 });
+
+// --- Whitelisted working directories ---
+// Extra user-granted local folders the agent may READ and copy files OUT of
+// (typically Chrome's default Downloads folder, where virtual-click downloads
+// on blocker sites land). Picking runs showDirectoryPicker here (window
+// context + user gesture), the handle persists to IndexedDB in THIS context,
+// then only the name crosses the message bus (JSON can't carry handles) and
+// the background mirrors the names to storage + agent prompts.
+
+async function renderWhitelistDirs() {
+  if (!whitelistListEl) return;
+  try {
+    const res = await sendToBackground('get_whitelist_directories');
+    const list = Array.isArray(res?.whitelist) ? res.whitelist : [];
+    whitelistListEl.textContent = '';
+    if (list.length === 0) {
+      const empty = document.createElement('span');
+      empty.textContent = t('st.display.workspace_whitelist.none');
+      whitelistListEl.appendChild(empty);
+      return;
+    }
+    for (const w of list) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:4px;';
+      const nameEl = document.createElement('span');
+      const needsAuth = w.permission !== 'granted';
+      nameEl.textContent = needsAuth ? `${w.name} ⚠` : w.name;
+      nameEl.title = needsAuth ? t('st.display.workspace_whitelist.needs_auth') : '';
+      row.appendChild(nameEl);
+      if (needsAuth) {
+        const reauth = document.createElement('button');
+        reauth.type = 'button';
+        reauth.className = 'btn-secondary';
+        reauth.style.cssText = 'padding:2px 8px;font-size:11px;';
+        reauth.textContent = t('st.display.workspace_whitelist.reauth');
+        reauth.addEventListener('click', () => pickWhitelistDir());
+        row.appendChild(reauth);
+      }
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn-secondary';
+      remove.style.cssText = 'padding:2px 8px;font-size:11px;';
+      remove.textContent = t('st.display.workspace_whitelist.remove');
+      remove.addEventListener('click', async () => {
+        await sendToBackground('remove_whitelist_directory', { name: w.name }).catch(() => null);
+        await renderWhitelistDirs();
+      });
+      row.appendChild(remove);
+      whitelistListEl.appendChild(row);
+    }
+  } catch {
+    whitelistListEl.textContent = '';
+  }
+}
+
+async function pickWhitelistDir() {
+  if (typeof showDirectoryPicker !== 'function') return;
+  try {
+    const handle = await showDirectoryPicker({ id: 'webbrain-whitelist', mode: 'readwrite' });
+    await saveWhitelistHandle(handle);
+    await sendToBackground('add_whitelist_directory', { name: String(handle.name || '') });
+    await renderWhitelistDirs();
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // user cancelled the picker
+  }
+}
+
+whitelistAddBtn?.addEventListener('click', pickWhitelistDir);
+renderWhitelistDirs();
 
 verboseToggle.addEventListener('change', async () => {
   await chrome.storage.local.set({ verboseMode: verboseToggle.checked }).catch(() => {});

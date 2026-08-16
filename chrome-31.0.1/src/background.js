@@ -5,6 +5,10 @@ import {
   clearWorkspaceHandle,
   loadWorkspaceHandle,
   resetWorkspaceHandleCache,
+  loadWhitelistHandles,
+  resetWhitelistHandlesCache,
+  removeWhitelistHandle,
+  whitelistHandlesState,
 } from './workspace/workspace-fs.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
@@ -404,9 +408,11 @@ loadPersona();
 // chrome.storage.local `workingDirectory` key mirrors only the name for
 // prompts and UI labels, and drives the onChanged → agent sync below.
 async function loadWorkingDirectory() {
-  const stored = await chrome.storage.local.get(['workingDirectory']);
+  const stored = await chrome.storage.local.get(['workingDirectory', 'workingDirectoryWhitelist']);
   const value = stored.workingDirectory;
   agent.workingDirectoryName = (value && typeof value.name === 'string') ? value.name : '';
+  const whitelist = Array.isArray(stored.workingDirectoryWhitelist) ? stored.workingDirectoryWhitelist : [];
+  agent.whitelistDirNames = whitelist.map((w) => w.name).filter(Boolean);
 }
 loadWorkingDirectory();
 
@@ -1059,6 +1065,13 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.workingDirectory) {
     const value = changes.workingDirectory.newValue;
     agent.workingDirectoryName = (value && typeof value.name === 'string') ? value.name : '';
+    refreshPrompts = true;
+  }
+  if (changes.workingDirectoryWhitelist) {
+    const value = changes.workingDirectoryWhitelist.newValue;
+    agent.whitelistDirNames = Array.isArray(value)
+      ? value.map((w) => w && w.name).filter(Boolean)
+      : [];
     refreshPrompts = true;
   }
   if (changes[USER_MEMORY_ENABLED_KEY] || changes[USER_MEMORY_MAX_PROMPT_CHARS_KEY] || changes[USER_MEMORY_STORAGE_KEY]) {
@@ -2173,6 +2186,7 @@ async function handleMessage(msg, sender) {
     'release_context_menu_prompt_claim',
     'capture_screenshot_redaction_snapshot',
     'get_working_directory_state',
+    'get_whitelist_directories',
   ].includes(msg.action);
   if (!lightweightAction) {
     // Ensure providers are loaded
@@ -3224,6 +3238,42 @@ async function handleMessage(msg, sender) {
       agent.workingDirectoryName = '';
       agent._refreshSystemPrompts();
       return { ok: true };
+    }
+
+    case 'add_whitelist_directory': {
+      // The settings page runs showDirectoryPicker (window-only, user
+      // gesture), persists the handle to IndexedDB in its own context, then
+      // posts just the name here. Reload from IndexedDB and mirror the names
+      // to storage.local for prompts/UI.
+      resetWhitelistHandlesCache();
+      const list = await loadWhitelistHandles();
+      const name = String(msg.name || '').trim();
+      if (!name) return { ok: false, error: 'Whitelisted directory name is missing. Pick the folder again.' };
+      if (!list.some((w) => w.name.toLowerCase() === name.toLowerCase())) {
+        return { ok: false, error: 'Whitelisted directory handle not found in IndexedDB. Pick the folder again.' };
+      }
+      const entries = list.map((w) => ({ name: w.name, updatedAt: Date.now() }));
+      await chrome.storage.local.set({ workingDirectoryWhitelist: entries });
+      agent.whitelistDirNames = entries.map((w) => w.name);
+      agent._refreshSystemPrompts();
+      return { ok: true, whitelist: entries };
+    }
+
+    case 'remove_whitelist_directory': {
+      resetWhitelistHandlesCache();
+      await removeWhitelistHandle(msg.name);
+      const list = await loadWhitelistHandles();
+      const entries = list.map((w) => ({ name: w.name, updatedAt: Date.now() }));
+      await chrome.storage.local.set({ workingDirectoryWhitelist: entries });
+      agent.whitelistDirNames = entries.map((w) => w.name);
+      agent._refreshSystemPrompts();
+      return { ok: true, whitelist: entries };
+    }
+
+    case 'get_whitelist_directories': {
+      resetWhitelistHandlesCache();
+      const state = await whitelistHandlesState();
+      return { ok: true, whitelist: state };
     }
 
     case 'get_active_prompt_tier': {

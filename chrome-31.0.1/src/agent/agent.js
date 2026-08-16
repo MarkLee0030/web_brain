@@ -49,6 +49,9 @@ import {
   workspaceReadFile,
   workspaceDownload,
   workspaceReadUpload,
+  workspaceWhitelistList,
+  workspaceCopyIn,
+  workspaceExtract,
 } from '../workspace/workspace-fs.js';
 import {
   isPdfUrl,
@@ -539,6 +542,10 @@ export class Agent extends LoopDetector {
     // mirrors the name for the system-prompt boundary note. Synced from
     // chrome.storage.local in background.js.
     this.workingDirectoryName = '';
+    // Whitelisted local directories (Settings → 白名单工作目录): staging
+    // areas the agent may read and copy files OUT of. Names only — handles
+    // live in IndexedDB. Synced from chrome.storage.local in background.js.
+    this.whitelistDirNames = [];
     this.customSkills = [];
     this.activeSkillIds = new Map(); // tabId -> skill ids loaded only for the current run
     this._nytimesPageGateNotified = new Set(); // tabIds already given trusted gate guidance this run
@@ -12789,6 +12796,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // FileSystemDirectoryHandle root + normalizeWorkspacePath).
     if (this.workingDirectoryName && this.workingDirectoryName.trim()) {
       prompt += `\n\n[WORKING DIRECTORY]\nThe user has granted a local working directory named "${this.workingDirectoryName.trim()}". You may create folders, delete items, write generated files, read text files, and download files INTO this directory using the workspace_* tools. Every path is relative to this directory — absolute paths and ".." are rejected by the runtime, and nothing outside this directory can be touched. The download_files, download_social_media, download_resource_from_page and read_downloaded_file tools are BLOCKED while this directory is selected, and upload_file only accepts paths relative to this directory — every file save and read must go through the workspace_* tools. Do not try the blocked tools first: they fail immediately with a permission error, so call the workspace_* tool directly and save steps. When the user mentions a full path such as "D:\\Photo\\sub\\file", recognize it as this directory whenever one of its folder components matches the directory name above, and treat the part after that name as the relative path instead of asking again. For any target the user names that lies elsewhere on disk, ask the user to pick it (or the intended folder) with the folder button in the side panel header.`;
+      if (Array.isArray(this.whitelistDirNames) && this.whitelistDirNames.length > 0) {
+        const whitelistNames = this.whitelistDirNames.map((n) => String(n).trim()).filter(Boolean);
+        prompt += `\n\n[WHITELISTED DIRECTORIES]\nThe user granted these additional local directories (Settings → 白名单工作目录): ${whitelistNames.join(', ')}. They are staging areas you may READ (workspace_whitelist_list) and copy files OUT of (workspace_copy_in) — the typical use is a download that landed in Chrome's default Downloads folder after a virtual click on a blocker site. Move such files INTO the working directory with workspace_copy_in (move:true removes the source after a verified copy); do not create or modify other files in these directories. Archives (.zip) that end up inside the working directory can be unpacked with workspace_extract (RAR/7z are not supported).`;
+      }
     }
     if (this.webMcpEnabled && (!this._isActionMode(mode) || tier !== 'compact')) {
       const webMcpPrompt = this._isActionMode(mode) ? SYSTEM_PROMPT_WEBMCP_ACT : SYSTEM_PROMPT_WEBMCP_ASK;
@@ -19279,6 +19290,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         args.urls = [args.url];
       }
       return await workspaceDownload(args.urls, { subfolder: args.subfolder });
+    }
+    if (name === 'workspace_whitelist_list') {
+      return await workspaceWhitelistList(args.dir, args.path);
+    }
+    if (name === 'workspace_copy_in') {
+      return await workspaceCopyIn({
+        dir: args.dir,
+        path: args.path,
+        destPath: args.destPath,
+        move: args.move !== false,
+      });
+    }
+    if (name === 'workspace_extract') {
+      return await workspaceExtract(args.path, args.destPath);
     }
 
     // ─── CAPTCHA solver ──────────────────────────────────────────────
