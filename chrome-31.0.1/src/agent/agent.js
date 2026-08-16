@@ -9103,6 +9103,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   _prepareClarificationAuthorizationForRun(tabId) {
     const guard = this._clarificationAuthorizationGuards.get(tabId);
     if (!guard) return;
+    // Local providers: a fresh user message means the user is present and
+    // driving — a stale waited-timeout guard must not keep blocking the new
+    // run (unattended local flows never arm it in the first place).
+    if (this._activeProviderIsLocal()) {
+      this._clarificationAuthorizationGuards.delete(tabId);
+      if (this.conversations.has(tabId)) this._persist(tabId);
+      return;
+    }
     const conversationId = this.conversationIds.get(tabId) || null;
     // A new user message is not necessarily an answer to the timed-out
     // question. Keep the guard across turns and reconnects; only discard an
@@ -18422,15 +18430,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { success: false, cancelled: true, reason: response.reason || 'clarify cancelled' };
       }
       const answer = String(response?.answer || '').trim();
-      const source = response?.source || 'user';
+      let source = response?.source || 'user';
+      // Local-provider runs are the user's unattended setup (batch downloads
+      // etc.): a waited clarify timeout must not arm the authorization guard
+      // that blocks every later consequential action — treat it like Instant
+      // auto-approve. Cloud providers keep the conservative semantics.
+      if (source === 'timeout' && this._activeProviderIsLocal()) source = 'auto';
       const authorized = await this._recordClarificationAuthorization(tabId, source);
       let note;
       if (source === 'timeout') {
         // Passive wait expired — not deliberate auto-approve.
         note = 'This answer was AUTO-SELECTED because the clarify timeout elapsed with no user reply (source=timeout). It is NOT a real user confirmation. Continue only with the safe default path; do NOT treat this as approval for irreversible, costly, or destructive actions — re-ask via clarify or stop if the next step is high-risk. Put the safe/default choice first in options next time.';
       } else if (source === 'auto') {
-        // Settings Instant auto-approve (headless / unattended). User policy — proceed.
-        note = 'This answer was auto-selected because Clarify timeout is set to Instant (source=auto). The user intentionally configured unattended auto-approve; treat this answer as the chosen default and continue the task. Do not re-ask the same question. Put the intended default first in options when Instant mode may be on.';
+        // Settings Instant auto-approve, or a waited timeout on a local
+        // provider (unattended local flow). User policy — proceed.
+        note = 'This answer was auto-selected without a direct user reply (Instant mode, or a waited timeout on a local provider). Treat this answer as the chosen default and continue the task. Do not re-ask the same question. Put the intended default first in options.';
       } else {
         note = 'This is a direct reply from the user. Treat it as authoritative for the question you asked; do not re-ask. Continue the task with this answer in mind.';
       }
