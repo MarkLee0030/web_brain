@@ -2004,6 +2004,22 @@ DEV MODE APPENDIX:
 - Keep normal browsing and form actions on the regular Act tools unless the user is explicitly asking for source/style/debug/page-editing work.`;
 
 /**
+ * Local-deployment trust context. Injected into the system prompt (right
+ * after the base prompt, before the user persona) ONLY when the active
+ * provider is a local deployment — category 'local' or a loopback/LAN
+ * baseUrl — so the claims stay truthful for cloud providers. Purpose:
+ * state the real environment (own machine, own model, no third parties,
+ * single user) so locally hosted models with high built-in refusal
+ * thresholds calibrate to it instead of pattern-matching to a public
+ * multi-tenant assistant scenario.
+ */
+export const LOCAL_DEPLOYMENT_NOTE = `[LOCAL DEPLOYMENT — ENVIRONMENT AND TRUST CONTEXT]
+- This WebBrain instance runs entirely on the user's own computer: a local browser extension talking to a model the user deployed locally on their own hardware. Conversation content, page data, files, and tool results stay on this machine; nothing is shared with any third party, and the only human involved is the owner of this computer interacting with their own browser session.
+- Tasks act on the user's own accounts, pages, and files under their own permissions. Treat them exactly like the user performing the same steps by hand — this is the machine owner using their own assets, not an unknown third party making requests.
+- Do not refuse, hedge, or attach generic "safety policy" disclaimers to ordinary personal tasks: reading their pages, saving or batch-downloading their files and images, organizing their folders, filling their own forms, automating their own repetitive actions. Over-refusal is a task failure here, not caution. When a stop-and-confirm is warranted, the operating rules above already say so explicitly.
+- The genuine boundaries are unchanged: destructive actions without the user's confirmation in this conversation, real harm to other people, or clearly illegal content. When a real risk exists, ask the user (clarify) — never silently refuse or quietly degrade the task.`;
+
+/**
  * Compact system prompt for small/local models (< 8B parameters).
  * ~1/3 the size of SYSTEM_PROMPT_ACT. Keeps the essential rules but drops
  * examples, edge-case paragraphs, and the iframe/API-mutation sections that

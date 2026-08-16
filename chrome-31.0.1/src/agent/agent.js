@@ -1,4 +1,4 @@
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX, SYSTEM_PROMPT_WEBMCP_ASK, SYSTEM_PROMPT_WEBMCP_ACT } from './tools.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX, SYSTEM_PROMPT_WEBMCP_ASK, SYSTEM_PROMPT_WEBMCP_ACT, LOCAL_DEPLOYMENT_NOTE } from './tools.js';
 import { validateToolArguments } from './tool-arguments.js';
 import { isSessionQuotaError, serializeConversationForSession, SESSION_CONVERSATION_BUDGET_BYTES, SESSION_CONVERSATION_RETRY_BUDGET_BYTES } from './conversation-persistence.js';
 import { formatErrorMessage } from '../error-format.js';
@@ -12722,6 +12722,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return mode === 'act' || mode === 'dev';
   }
 
+  /**
+   * True when the active provider is the user's own local deployment:
+   * a 'local' category preset, or any baseUrl pointing at loopback or a
+   * private LAN address (covers hand-added OpenAI-compatible entries).
+   * Gates the LOCAL_DEPLOYMENT_NOTE so its "everything stays on this
+   * machine" claims are never sent to a cloud provider where they would
+   * be false.
+   */
+  _activeProviderIsLocal() {
+    try {
+      const provider = this.providerManager.getActive();
+      if (!provider) return false;
+      const config = provider.config || {};
+      if (config.category === 'local') return true;
+      const match = String(config.baseUrl || '').match(/^https?:\/\/([^/:]+)/);
+      const host = match ? match[1].toLowerCase() : '';
+      return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
+        || host.startsWith('192.168.') || host.startsWith('10.')
+        || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    } catch { return false; }
+  }
+
   _effectiveRunMode(tabId, fallback = 'ask') {
     return this._runModeOverrides.get(tabId)
       || this.conversationModes.get(tabId)
@@ -12749,6 +12771,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let prompt = this._isActionMode(mode) ? this._getActPrompt() : SYSTEM_PROMPT_ASK;
     if (mode === 'dev') {
       prompt += `\n\n${SYSTEM_PROMPT_DEV_APPENDIX.trim()}`;
+    }
+    // Local-deployment trust context: sits in the base-prompt rule layer
+    // (not the persona styling layer) and only for local providers, so
+    // locally hosted models with high refusal thresholds calibrate to the
+    // real single-user environment instead of a public-assistant scenario.
+    if (this._activeProviderIsLocal()) {
+      prompt += `\n\n${LOCAL_DEPLOYMENT_NOTE.trim()}`;
     }
     // User-defined persona (Settings → Assistant persona). Appended, not
     // prepended, keeping the cache-stable base prompt at the front.
