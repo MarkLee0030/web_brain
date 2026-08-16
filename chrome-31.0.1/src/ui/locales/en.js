@@ -288,6 +288,7 @@ export default {
   'sp.clarify.input_placeholder_with_options': 'Or type a different answer…',
   'sp.clarify.your_answer': 'Your answer:',
   'sp.clarify.auto_timeout': 'Auto-selects in {seconds}s',
+  'sp.submit.auto_allow_in': 'Auto-allows in {seconds}s (this conversation)',
   'sp.clarify.auto_selected': 'Auto-selected (timed out):',
   'sp.clarify.auto_selected_instant': 'Auto-selected (Instant):',
   'sp.plan.title': 'Review plan',

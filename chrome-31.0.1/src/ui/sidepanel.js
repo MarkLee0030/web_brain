@@ -4895,8 +4895,9 @@ function rebindClarifyCards() {
     });
 
     // Restart countdown after HTML restore when timeout metadata survived on
-    // the card. Skip permission/form-submit cards (they never auto-timeout).
-    if (card.dataset.permission === '1' || card.dataset.submitConfirmation === '1') return;
+    // the card. Skip permission cards (they never auto-timeout). Form-submit
+    // cards MAY carry an auto-allow deadline (local providers).
+    if (card.dataset.permission === '1') return;
     const deadlineTs = Number(card.dataset.deadlineTs);
     if (!Number.isFinite(deadlineTs) || deadlineTs <= 0) return;
     const firstOption = card.dataset.firstOption
@@ -9576,6 +9577,17 @@ function renderClarifyCard(data) {
       optionsEl.appendChild(b);
     }
     card.appendChild(optionsEl);
+    // Local-provider submit cards carry an auto-allow deadline: show the live
+    // countdown; on expiry the UI backup posts 'once' (the agent-side timer
+    // is authoritative and settles first in the normal case).
+    if (Number(data.timeoutSec) > 0 && Number(data.deadlineTs) > 0) {
+      startClarifyCountdown(card, {
+        tabId,
+        clarifyId,
+        deadlineTs: Number(data.deadlineTs),
+        firstOption: 'once',
+      });
+    }
     content.appendChild(card);
     scrollToBottom({ force: true });
     return;
@@ -9715,7 +9727,9 @@ function startClarifyCountdown(card, { tabId, clarifyId, deadlineTs, firstOption
     const remainingMs = Math.max(0, deadlineTs - Date.now());
     const remainingSec = Math.ceil(remainingMs / 1000);
     timerEl.textContent = typeof t === 'function'
-      ? t('sp.clarify.auto_timeout', { seconds: remainingSec })
+      ? (card.dataset.submitConfirmation === '1'
+        ? t('sp.submit.auto_allow_in', { seconds: remainingSec })
+        : t('sp.clarify.auto_timeout', { seconds: remainingSec }))
       : `Auto-selects in ${remainingSec}s`;
     if (remainingMs <= 0) {
       clearClarifyCountdown(card);
@@ -9740,7 +9754,9 @@ function lockClarifyCardFromAuto(data) {
   for (const card of document.querySelectorAll('.clarify-card')) {
     if (String(card.dataset.clarifyId || '') !== clarifyId) continue;
     if (card.classList.contains('clarify-answered')) return;
-    if (card.dataset.permission === '1' || card.dataset.submitConfirmation === '1') return;
+    // Permission cards never auto-settle; form-submit cards now do (local
+    // providers), so they must lock here like regular clarify cards.
+    if (card.dataset.permission === '1') return;
     clearClarifyCountdown(card);
     card.classList.add('clarify-answered');
     for (const el of card.querySelectorAll('button, input')) {

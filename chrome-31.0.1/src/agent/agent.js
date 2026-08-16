@@ -3708,6 +3708,10 @@ export class Agent extends LoopDetector {
   // (virtual click → whitelisted staging dir → workspace_copy_in →
   // workspace_extract) and direct workspace_download.
   static EXECUTION_DOWNLOAD_EVIDENCE_TOOLS = new Set(['workspace_download', 'workspace_copy_in', 'workspace_extract']);
+
+  // Countdown (seconds) after which an unanswered form-submit confirmation
+  // card defaults to "allow this conversation". Local providers only.
+  static SUBMIT_CONFIRM_AUTO_ALLOW_SEC = 5;
   static DELIVERY_OBSERVATION_TOOLS = new Set(['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'get_selection', 'find_text', 'scroll', 'wait_for_stable', 'wait_for_element', 'read_pdf', 'fetch_url', 'research_url', 'read_downloaded_file', 'iframe_read', 'get_window_info', 'list_downloads', 'progress_read', 'inspect_viewport', 'screenshot', 'get_frames', 'get_shadow_dom', 'shadow_dom_query', 'read_youtube_transcript']);
   static NAV_PRONE_TOOLS = new Set(['click', 'click_ax', 'set_checked', 'navigate', 'go_back', 'go_forward', 'execute_js', 'iframe_click', 'execute_webmcp_tool']);
   static RECOMMENDED_ACTION_FAST_PATH_IDS = new Set(['download-media', 'tweet-webbrain', 'post-webbrain-linkedin', 'find-coupons']);
@@ -12678,10 +12682,31 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const clarifyId = `submit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const host = normalizeHost(submitInfo?.host || '') || String(submitInfo?.host || '').trim() || 'this site';
 
+    // Unattended batch flows (CAPTCHA-gated downloads on a local provider)
+    // must not hang on the card: after a short countdown with no reaction,
+    // default to "allow this conversation" — an explicit user request for
+    // their all-local setup. Cloud providers keep manual-only confirmation.
+    const autoAllowSec = this._activeProviderIsLocal()
+      ? this.constructor.SUBMIT_CONFIRM_AUTO_ALLOW_SEC
+      : 0;
+    const deadlineTs = autoAllowSec > 0 ? Date.now() + autoAllowSec * 1000 : 0;
+
     const tabPending = this._pendingClarifications.get(tabId) || new Map();
     this._pendingClarifications.set(tabId, tabPending);
     const responsePromise = new Promise((resolve) => {
-      tabPending.set(clarifyId, { resolve, ts: Date.now() });
+      const entry = { resolve, ts: Date.now(), timer: null, settled: false };
+      if (autoAllowSec > 0) {
+        entry.timer = setTimeout(() => {
+          entry.timer = null;
+          try {
+            if (typeof onUpdate === 'function') {
+              onUpdate('clarify_auto', { clarifyId, answer: 'once', source: 'timeout', timeoutSec: autoAllowSec });
+            }
+          } catch { /* UI emit must never break the run */ }
+          this._settleClarification(entry, { answer: 'once', source: 'timeout' });
+        }, autoAllowSec * 1000);
+      }
+      tabPending.set(clarifyId, entry);
     });
 
     if (typeof onUpdate === 'function') {
@@ -12698,11 +12723,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           },
           question: `WebBrain wants to submit this form on ${host}.`,
           options: ['once', 'deny'],
+          timeoutSec: autoAllowSec || undefined,
+          deadlineTs: deadlineTs || undefined,
         });
       } catch {}
     }
 
     const response = await responsePromise;
+    {
+      const entry = tabPending.get(clarifyId);
+      this._clearClarifyTimer(entry);
+    }
     tabPending.delete(clarifyId);
     if (tabPending.size === 0) this._pendingClarifications.delete(tabId);
 
@@ -12720,6 +12751,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
+   * Normalize a form-action URL for submit-confirmation memory: drop the
+   * sentence-punctuation trail and collapse id-ish path segments (numeric, or
+   * long digit-bearing tokens) so per-item endpoints such as
+   * /album_download/1456627 share one remembered approval across items.
+   */
+  static _normalizeSubmitFormAction(action) {
+    const raw = String(action || '').trim().replace(/[.]+$/, '');
+    try {
+      const u = new URL(raw);
+      const path = u.pathname.split('/').map((segment) => (
+        /^\d+$/.test(segment)
+        || (segment.length >= 8 && /\d/.test(segment) && /^[0-9A-Za-z_-]+$/.test(segment))
+          ? ':id'
+          : segment
+      )).join('/');
+      return `${u.origin}${path}`;
+    } catch {
+      return raw;
+    }
+  }
+
+  /**
    * Stable identity for a submitted form: host + form action + sorted
    * changed-field LABELS. Field values are deliberately excluded — a
    * rotating CAPTCHA answer must not break the remembered approval.
@@ -12730,7 +12783,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (!host) return null;
       const summary = String(submitInfo?.summary || '');
       const actionMatch = summary.match(/Form action:\s*\S+\s+(\S+)/);
-      const action = actionMatch ? actionMatch[1] : '';
+      const action = this.constructor._normalizeSubmitFormAction(actionMatch ? actionMatch[1] : '');
       const labels = (Array.isArray(submitInfo?.changedFields) ? submitInfo.changedFields : [])
         .map((field) => String(field?.label || '').trim())
         .filter(Boolean)

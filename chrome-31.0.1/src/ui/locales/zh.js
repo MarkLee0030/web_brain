@@ -414,6 +414,7 @@ export default {
   "sp.clarify.input_placeholder_with_options": "或输入其他回答…",
   "sp.clarify.your_answer": "你的回答：",
   "sp.clarify.auto_timeout": "将在 {seconds} 秒后自动选择",
+  "sp.submit.auto_allow_in": "{seconds} 秒后自动允许（本次对话）",
   "sp.clarify.auto_selected": "已自动选择（超时）：",
   "sp.clarify.auto_selected_instant": "已自动选择（立即）：",
   "sp.perm.question": "WebBrain 想要{verb} {host}。允许吗？",
