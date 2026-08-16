@@ -6664,25 +6664,29 @@ async function loadWorkingDirState() {
 
 workingDirBtn?.addEventListener('click', async () => {
   try {
-    // Fast path: if a handle is already persisted (Chrome only revoked the
-    // grant), requestPermission pops the lightweight allow/deny prompt
-    // instead of the full folder picker — one click, no folder navigation.
-    try {
-      const existing = await loadWorkspaceHandle();
-      if (existing && typeof existing.requestPermission === 'function') {
-        const perm = await existing.requestPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-          await saveWorkspaceHandle(existing);
-          const res = await sendToBackground('pick_working_directory', { name: String(existing.name || '') });
-          if (res?.ok !== false) {
-            workingDirState = res.workingDirectory || null;
-            workingDirPermission = 'granted';
-            syncWorkingDirButton();
-            return;
+    // Fast path ONLY when re-authorization is what's needed: a handle is
+    // persisted but Chrome revoked the grant. requestPermission then pops the
+    // lightweight allow/deny prompt instead of the folder picker. When access
+    // is already granted, the click means "change folder" — fall through to
+    // the full picker.
+    if (workingDirPermission !== 'granted') {
+      try {
+        const existing = await loadWorkspaceHandle();
+        if (existing && typeof existing.requestPermission === 'function') {
+          const perm = await existing.requestPermission({ mode: 'readwrite' });
+          if (perm === 'granted') {
+            await saveWorkspaceHandle(existing);
+            const res = await sendToBackground('pick_working_directory', { name: String(existing.name || '') });
+            if (res?.ok !== false) {
+              workingDirState = res.workingDirectory || null;
+              workingDirPermission = 'granted';
+              syncWorkingDirButton();
+              return;
+            }
           }
         }
-      }
-    } catch { /* fall through to the full picker */ }
+      } catch { /* fall through to the full picker */ }
+    }
     const handle = await showDirectoryPicker({ id: 'webbrain-working-dir', mode: 'readwrite' });
     // chrome.runtime messaging serializes with JSON and silently drops
     // FileSystemHandle objects, so persist the handle here (window context,
