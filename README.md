@@ -11,7 +11,7 @@
   - **增/删/改**：`workspace_mkdir` / `workspace_delete` / `workspace_write_file` 本身被 OS 级目录句柄 + 路径校验封死，`..`、绝对路径、盘符全部拒绝并返回 permission 错误。
   - **文件只能落在、只能读自指定文件夹内**。
 - **工作目录白名单**（设置 → 显示 → 工作目录白名单）：额外授权代理可**读取**的本地文件夹（如 Chrome 默认下载文件夹）。带 blocker 的网站只能靠虚拟触控点击下载按钮，文件会落进 Chrome 默认下载目录——把该目录加入白名单后，代理可用 `workspace_whitelist_list` 查看、`workspace_copy_in` 把文件**搬移进**工作目录（move 默认 true，复制校验成功后才删源文件）。浏览器重启后每个白名单目录需点一次「重新授权」。
-- **ZIP 解压工具**（`workspace_extract`）：解压工作目录内的 `.zip`（零依赖：central directory 解析 + 原生 `DecompressionStream('deflate-raw')`）。保留内部目录结构、条目名净化、不覆盖已有文件、跳过加密/超限条目并逐条报告；RAR/7z 明确拒绝并给出处理建议。配合批量下载技能：压缩包先搬进标题子文件夹再解压，松散的图片也不会散落到文件夹外。
+- **压缩包解压工具**（`workspace_extract`）：解压工作目录内的 zip/7z/rar/tar/gz/xz/bz2 等格式——内置 **7z-wasm**（use-strict/7z-wasm 1.2.0，7-Zip 24.09 编译到 WASM，`src/vendor/7z-wasm/`，LGPL + unRAR 限制：仅用于解压、不得用于开发 RAR 兼容压缩器），惰性加载 1.7MB wasm、service worker 内无 Worker 直接运行（MV3 SW 不能开 Worker，排除了 worker 型引擎）；zip 另有零依赖解析器（central directory + 原生 `DecompressionStream('deflate-raw')`）作引擎加载失败时的回退。保留内部目录结构、条目名净化、不覆盖已有文件、跳过符号链接/超限条目并逐条报告；带密码的压缩包无法解压（引擎返回无输出）。配合批量下载技能：压缩包先搬进标题子文件夹再解压，松散的图片也不会散落到文件夹外。
 - **批量图片下载技能**（`skills/batch-image-download.md`）：默认**规律优先**——提取一次、找出 URL 命名规律（如 `xxx-1`…`xxx-48`）、抽验中间+末尾样本后整批一次下载，不逐张滚屏；默认在工作目录内新建以页面标题命名的子文件夹。
 - **思考强度按钮**：侧栏一键循环切换 Muse-Glimmer（auto/low/medium/high/xhigh）与 Qwen3.5+（auto/off/low/medium/xhigh）档位，即时生效。
 - **本地部署信任声明**：provider 为本地模型（category=local 或回环/局域网地址）时，在 base prompt 规则层注入 `LOCAL_DEPLOYMENT_NOTE`——声明环境事实（自己机器、数据不出本机、仅机主本人交互），压低 Qwen 等模型对普通个人任务的过度安全拦截；云端 provider 不注入（保持声明真实）。

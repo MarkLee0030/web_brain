@@ -566,12 +566,20 @@ export async function workspaceSaveStream(name, response) {
   return { success: true, path: finalName, bytes: length ? Number(length) : null };
 }
 
-// ─── ZIP extraction (workspace_extract) ─────────────────────────────────────
-// Dependency-free ZIP reader: central-directory parsing + the platform's
-// native DecompressionStream('deflate-raw') for method-8 entries (ZIP stores
-// raw DEFLATE bitstreams, which is exactly the 'deflate-raw' format). Stored
-// entries (method 0) are copied verbatim. RAR/7z/tar are refused — their
-// formats have no browser-native decoder.
+// ─── Archive extraction (workspace_extract) ─────────────────────────────────
+// Primary engine: vendored use-strict/7z-wasm 1.2.0 (7-Zip 24.09 compiled to
+// WASM — LGPL + unRAR restriction, see src/vendor/7z-wasm/License.txt and
+// unRarLicense.txt). It handles 7z/zip/rar/tar/gz/xz/bz2/... in one binary
+// and runs in-thread, which matters: MV3 service workers cannot spawn web
+// workers, ruling out worker-based engines. The unRAR restriction only
+// forbids building a RAR-compatible ARCHIVER from the code; this extension
+// only decompresses. The engine is loaded lazily (1.7 MB wasm) on the first
+// extraction and cached for the service worker's lifetime.
+//
+// Fallback: a dependency-free ZIP reader (central-directory parsing + the
+// platform's native DecompressionStream('deflate-raw') for method-8 entries —
+// ZIP stores raw DEFLATE bitstreams, which is exactly 'deflate-raw'). It
+// covers the common image-pack case if the wasm engine ever fails to load.
 
 const EXTRACT_MAX_ENTRIES = 3000;
 const EXTRACT_MAX_TOTAL_BYTES = 3 * 1024 * 1024 * 1024;
@@ -668,12 +676,153 @@ async function readZipEntryData(u8, entry) {
   return inflateRawDeflate(raw);
 }
 
+// ─── 7z-wasm engine ─────────────────────────────────────────────────────────
+let sevenZipModulePromise = null;
+
+async function loadSevenZip() {
+  if (!sevenZipModulePromise) {
+    sevenZipModulePromise = import('../vendor/7z-wasm/7zz.es6.js')
+      .then((m) => m.default())
+      .catch((e) => {
+        sevenZipModulePromise = null;
+        throw e;
+      });
+  }
+  return sevenZipModulePromise;
+}
+
+const EXTRACT_WORK_ROOT = '/wb';
+let extractWorkCounter = 0;
+
+function removeFsTree(sz, path) {
+  try {
+    for (const name of sz.FS.readdir(path)) {
+      if (name === '.' || name === '..') continue;
+      const child = `${path}/${name}`;
+      try {
+        if (sz.FS.stat(child).isDirectory()) removeFsTree(sz, child);
+        else sz.FS.unlink(child);
+      } catch { /* best effort */ }
+    }
+    sz.FS.rmdir(path);
+  } catch { /* best effort */ }
+}
+
 /**
- * Extract a .zip archive that lives INSIDE the working directory.
- * `destPath` defaults to the archive's own folder; internal structure is
- * preserved, entry names are sanitized, existing files are never overwritten
- * (-N suffix), and unsafe/encrypted/oversized entries are skipped with a
- * per-entry reason. RAR/7z/tar are refused with a clear error.
+ * Decompress `u8` with the 7-Zip WASM engine and return the extracted files
+ * as { name, bytes } pairs. The engine instance (and its in-memory Emscripten
+ * FS) is reused across calls; each call extracts under a fresh work directory
+ * which is removed afterwards so a failed run cannot leak memory.
+ *
+ * Success is decided by FS contents, not the CLI exit code (some build
+ * configurations throw on exit even for exit 0), and the buffered stderr
+ * rides along on errors for diagnostics.
+ */
+async function extractWithSevenZip(u8, archName) {
+  const sz = await loadSevenZip();
+  const workDir = `${EXTRACT_WORK_ROOT}/${++extractWorkCounter}`;
+  const outDir = `${workDir}/out`;
+  const archivePath = `${workDir}/${archName.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+  let lastError = '';
+  try {
+    sz.FS.mkdir(EXTRACT_WORK_ROOT);
+  } catch { /* exists */ }
+  try {
+    sz.FS.mkdir(workDir);
+    sz.FS.mkdir(outDir);
+    const stream = sz.FS.open(archivePath, 'w+');
+    sz.FS.write(stream, u8, 0, u8.length);
+    sz.FS.close(stream);
+    lastError = '';
+    sz.printErr = (msg) => { lastError = (lastError + String(msg)).slice(-4000); };
+    try {
+      sz.callMain(['x', archivePath, `-o${outDir}`, '-y', '-bso0', '-bsp0', '-snl-']);
+    } catch {
+      // Exit-status quirks vary by build; the FS walk below is the verdict.
+    }
+    // Phase 1: enumerate + stat, so the size guards fire BEFORE anything is
+    // read into JS memory.
+    const found = [];
+    const walk = (dir, rel) => {
+      for (const name of sz.FS.readdir(dir)) {
+        if (name === '.' || name === '..') continue;
+        const child = `${dir}/${name}`;
+        let stat;
+        try { stat = sz.FS.stat(child); } catch { continue; }
+        const relPath = rel ? `${rel}/${name}` : name;
+        if (stat.isDirectory()) { walk(child, relPath); continue; }
+        if (stat.isSymbolicLink?.() || (stat.mode & 0o170000) === 0o120000) {
+          found.push({ relPath, child, bytes: null, skippedReason: 'symlink' });
+          continue;
+        }
+        found.push({ relPath, child, bytes: stat.size, skippedReason: null });
+      }
+    };
+    walk(outDir, '');
+    const real = found.filter((f) => f.bytes !== null);
+    if (real.length === 0) {
+      throw new Error(
+        `Archive "${archName}" produced no files. ${lastError ? `7-Zip reported: ${lastError}` : 'It may be corrupt, empty, or encrypted.'}`,
+      );
+    }
+    if (real.length > EXTRACT_MAX_ENTRIES) {
+      throw new Error(`Archive has ${real.length} entries (max ${EXTRACT_MAX_ENTRIES})`);
+    }
+    const totalBytes = real.reduce((sum, f) => sum + f.bytes, 0);
+    if (totalBytes > EXTRACT_MAX_TOTAL_BYTES) {
+      throw new Error(`Archive contents exceed ${EXTRACT_MAX_TOTAL_BYTES} bytes in total — extract a subset instead`);
+    }
+    // Phase 2: read each file out of the FS and unlink it immediately so a
+    // large archive never doubles its memory footprint.
+    const files = [];
+    const skipped = found
+      .filter((f) => f.skippedReason)
+      .map((f) => ({ name: f.relPath, reason: f.skippedReason }));
+    for (const f of real) {
+      if (f.bytes > EXTRACT_MAX_ENTRY_BYTES) {
+        skipped.push({ name: f.relPath, reason: 'too large' });
+      } else {
+        try {
+          files.push({ name: f.relPath, bytes: sz.FS.readFile(f.child) });
+        } catch (e) {
+          skipped.push({ name: f.relPath, reason: e?.message || String(e) });
+        }
+      }
+      try { sz.FS.unlink(f.child); } catch { /* best effort */ }
+    }
+    removeFsTree(sz, workDir);
+    if (files.length === 0) {
+      throw new Error(`Nothing extractable in "${archName}"${lastError ? ` — ${lastError}` : ''}`);
+    }
+    return { files, skipped };
+  } catch (e) {
+    removeFsTree(sz, workDir);
+    throw e;
+  }
+}
+
+async function writeExtractedFile(destRoot, destSegments, segs, bytes) {
+  const parent = await resolveDirMaybe(destRoot, segs.slice(0, -1), true);
+  const finalName = await uniqueName(parent, segs[segs.length - 1]);
+  const outHandle = await parent.getFileHandle(finalName, { create: true });
+  const writable = await outHandle.createWritable();
+  await writable.write(bytes);
+  await writable.close();
+  return {
+    path: friendlyPath(destSegments.concat(segs.slice(0, -1).concat(finalName))),
+    bytes: bytes.byteLength,
+  };
+}
+
+/**
+ * Extract an archive that lives INSIDE the working directory. Supported
+ * formats: zip, 7z, rar, tar, gz, xz, bz2 and everything else the 7-Zip
+ * engine handles (the dependency-free ZIP reader is the fallback for .zip
+ * when the WASM engine cannot load). `destPath` defaults to the archive's
+ * own folder; internal structure is preserved, entry names are sanitized,
+ * existing files are never overwritten (-N suffix), and unsafe/oversized
+ * entries are skipped with a per-entry reason. Encrypted archives (password
+ * protected) cannot be unpacked — the engine reports them as no-output.
  */
 export async function workspaceExtract(path, destPath = null) {
   const handle = await requireHandle();
@@ -687,26 +836,59 @@ export async function workspaceExtract(path, destPath = null) {
   } catch {
     throw new Error(`Archive not found in working directory: ${friendlyPath(archSegments)}`);
   }
-  const lower = archName.toLowerCase();
-  if (/\.(rar|7z|tar|gz|tgz|bz2|xz)$/.test(lower)) {
-    throw new Error(`Unsupported archive format "${archName}" — workspace_extract only supports .zip archives. Ask the user to extract it manually (or re-download as .zip) and copy the files into the working directory.`);
-  }
   const u8 = new Uint8Array(await (await archHandle.getFile()).arrayBuffer());
-  if (!(u8[0] === 0x50 && u8[1] === 0x4b)) {
-    throw new Error(`"${archName}" is not a ZIP archive`);
-  }
   const destRaw = destPath == null ? '' : String(destPath).trim();
   const destSegments = destRaw ? normalizeWorkspacePath(destRaw) : archSegments.slice(0, -1);
   if (destSegments === null) throw new Error(workspaceEscapeError(destRaw));
   const destRoot = await resolveDirMaybe(handle, destSegments, true);
 
+  let engineResult = null;
+  try {
+    engineResult = await extractWithSevenZip(u8, archName);
+  } catch (e) {
+    // Fall back to the built-in ZIP reader only for .zip archives; for any
+    // other format the engine is the only path, so surface its error.
+    if (!/\.zip$/i.test(archName)) throw e;
+    engineResult = null;
+  }
+
+  const skipped = [];
+  const files = [];
+  if (engineResult) {
+    for (const f of engineResult.files) {
+      let segs;
+      try {
+        segs = sanitizeEntryPath(f.name);
+      } catch (e) {
+        skipped.push({ name: f.name, reason: e.message });
+        continue;
+      }
+      if (segs.length === 0) continue;
+      try {
+        files.push(await writeExtractedFile(destRoot, destSegments, segs, f.bytes));
+      } catch (e) {
+        skipped.push({ name: f.name, reason: e?.message || String(e) });
+      }
+    }
+    skipped.push(...(engineResult.skipped || []));
+    return {
+      success: files.length > 0,
+      destPath: friendlyPath(destSegments),
+      extractedCount: files.length,
+      files,
+      skipped,
+    };
+  }
+
+  // Fallback: dependency-free ZIP reader (engine failed to load).
+  if (!(u8[0] === 0x50 && u8[1] === 0x4b)) {
+    throw new Error(`"${archName}" is not a ZIP archive and the 7-Zip engine is unavailable — extract it manually.`);
+  }
   const entries = parseZipCentral(u8);
   if (entries.length === 0) throw new Error('ZIP archive is empty');
   if (entries.length > EXTRACT_MAX_ENTRIES) {
     throw new Error(`ZIP has ${entries.length} entries (max ${EXTRACT_MAX_ENTRIES})`);
   }
-  const skipped = [];
-  const files = [];
   let total = 0;
   for (const entry of entries) {
     if (entry.encrypted) { skipped.push({ name: entry.name, reason: 'encrypted' }); continue; }
@@ -735,16 +917,7 @@ export async function workspaceExtract(path, destPath = null) {
     }
     try {
       const data = await readZipEntryData(u8, entry);
-      const parent = await resolveDirMaybe(destRoot, segs.slice(0, -1), true);
-      const finalName = await uniqueName(parent, segs[segs.length - 1]);
-      const outHandle = await parent.getFileHandle(finalName, { create: true });
-      const writable = await outHandle.createWritable();
-      await writable.write(data);
-      await writable.close();
-      files.push({
-        path: friendlyPath(destSegments.concat(segs.slice(0, -1).concat(finalName))),
-        bytes: data.byteLength,
-      });
+      files.push(await writeExtractedFile(destRoot, destSegments, segs, data));
     } catch (e) {
       skipped.push({ name: entry.name, reason: e?.message || String(e) });
     }
