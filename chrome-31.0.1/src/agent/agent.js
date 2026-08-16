@@ -13305,6 +13305,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   clearConversation(tabId) {
     this._cancelClarifications(tabId, 'conversation cleared');
     this._cancelPendingPlans(tabId, 'conversation cleared');
+    // Session-scoped permission accepts (Allow once) end with the
+    // conversation — never leak into the next one on this tab.
+    this.permissions.endConversation(tabId);
     this.conversations.delete(tabId);
     this.plannerFollowUpSkipTabs.delete(tabId);
     this.progressLedgers.delete(tabId);

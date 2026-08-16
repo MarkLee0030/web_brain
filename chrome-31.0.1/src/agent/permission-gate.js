@@ -386,7 +386,12 @@ export function requiredHosts(capability, args, currentUrlOrHost, toolName) {
  *
  * Grant shape: { capability, host, action: 'allow'|'deny', duration: 'once'|'always', ts }
  *   - 'always' grants are persisted (via save) and survive turns/sessions.
- *   - 'once' grants/denies live only until the next beginTurn().
+ *   - 'once' ALLOWS are session-scoped: they live until endConversation()
+ *     (the conversation is cleared) for their tab, so a user who accepts a
+ *     repeated action (e.g. submitting a CAPTCHA-protected form) is not
+ *     re-prompted on every turn of the same conversation.
+ *   - 'once' DENIES stay per-turn (dropped at beginTurn): a deny is
+ *     conservative, and expiring it lets the user allow a later attempt.
  */
 export class PermissionManager {
   constructor(opts = {}) {
@@ -429,12 +434,26 @@ export class PermissionManager {
   }
 
   /**
-   * Drop a tab's transient (once) grants/denies at the start of a new user
-   * turn. ONLY this tab's — the agent runs tabs concurrently (one shared
-   * PermissionManager), so a new turn in one tab must not wipe a still-running
-   * tab's one-time grant. "always" grants are global and untouched.
+   * Drop a tab's transient (once) DENIES at the start of a new user turn.
+   * Once-ALLOWS survive turns for the whole conversation (session scope) —
+   * see endConversation() — so accepting a repeated action once does not
+   * re-prompt on every turn. ONLY this tab's grants are touched: the agent
+   * runs tabs concurrently (one shared PermissionManager), so a new turn in
+   * one tab must not wipe a still-running tab's grants. "always" grants are
+   * global and untouched.
    */
   beginTurn(tabId) {
+    this.permissions = this.permissions.filter(
+      p => p.duration === 'always' || p.tabId !== tabId || p.action !== 'deny',
+    );
+  }
+
+  /**
+   * Conversation cleared for a tab: drop ALL of its transient grants (once
+   * allows and once denies). A new conversation starts with a clean slate —
+   * session-scoped accepts never leak into the next conversation on the tab.
+   */
+  endConversation(tabId) {
     this.permissions = this.permissions.filter(p => p.duration === 'always' || p.tabId !== tabId);
   }
 
@@ -467,7 +486,9 @@ export class PermissionManager {
         try { await this._save(this.permissions.filter(p => p.duration === 'always')); } catch { /* best-effort */ }
       }
     } else {
-      // Once: scoped to this tab; supersede a prior once-grant for the same key.
+      // Once: scoped to this tab; supersede a prior once-grant for the same
+      // key. Allows persist for the whole conversation (session scope);
+      // denies expire at the next beginTurn().
       this.permissions = this.permissions.filter(p =>
         !(p.duration !== 'always' && p.capability === capability && p.host === h && p.tabId === tabId));
       this.permissions.push({ capability, host: h, action, duration: 'once', tabId, ts: Date.now() });

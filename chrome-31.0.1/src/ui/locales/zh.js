@@ -28,7 +28,7 @@ export default {
   'st.provider.field.output_cost_per_million': "估算输出费用（$ / 100 万 token）",
 
   // Permission UI — standalone buttons + labels (rest falls back to English)
-  'sp.perm.allow_once': "允许一次",
+  'sp.perm.allow_once': "本次对话允许",
   'sp.perm.always_allow': "始终允许 {host}",
   'sp.perm.dont_allow': "不允许",
   'st.tab.permissions': "权限",

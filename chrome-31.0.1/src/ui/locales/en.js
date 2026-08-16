@@ -316,7 +316,7 @@ export default {
   // Permission prompt (structured; returns once/always/deny — no free text)
   'sp.perm.question': 'WebBrain wants to {verb} {host}. Allow it?',
   'sp.perm.reason': 'Permission check — WebBrain only takes consequential actions on sites you allow.',
-  'sp.perm.allow_once': 'Allow once',
+  'sp.perm.allow_once': 'Allow this conversation',
   'sp.perm.always_allow': 'Always allow on {host}',
   'sp.perm.dont_allow': "Don't allow",
   'sp.perm.skip_hint': 'Want fewer interruptions? “Always allow” remembers this site. The command below disables WebBrain permission prompts on every site.',
