@@ -8377,6 +8377,7 @@ async function sendMessage(extraChatParams = {}) {
             })
             && !renderSubscribeError(textEl, res.content, modeForSend)) {
           textEl.innerHTML = formatMarkdown(res.content);
+          stashRawAssistantText(textEl, res.content);
         }
         addMessageCopyButton(assistantEl);
       }
@@ -9149,7 +9150,10 @@ function handleAgentUpdateMessage(msg) {
                 submittedTurnDurable: data.submittedTurnDurable,
                 retryPayload: activeRetryPayloadForRequest(eventTabId, msg.requestId),
               })
-              && !renderSubscribeError(textEl, data.finalContent)) textEl.innerHTML = formatMarkdown(data.finalContent);
+              && !renderSubscribeError(textEl, data.finalContent)) {
+            textEl.innerHTML = formatMarkdown(data.finalContent);
+            stashRawAssistantText(textEl, data.finalContent);
+          }
           addMessageCopyButton(currentAssistantEl);
         }
       }
@@ -10105,6 +10109,7 @@ function renderAssistantTextUpdate(assistantEl, content, options = {}) {
     // Empty content clears the bubble (plan-only retry before recovery tools).
     if (content) {
       textEl.innerHTML = formatMarkdown(content);
+      stashRawAssistantText(textEl, content);
       streamedAssistantTextByEl.set(textEl, String(content));
     } else {
       textEl.textContent = '';
@@ -10119,10 +10124,12 @@ function renderAssistantTextUpdate(assistantEl, content, options = {}) {
     para.className = 'reasoning-step';
     para.innerHTML = formatMarkdown(content);
     textEl.appendChild(para);
+    stashRawAssistantText(textEl, content);
   } else {
     // Compact mode keeps only the latest blurb. A streamed final lands here
     // too for one authoritative render with terminal-only enhancements.
     textEl.innerHTML = formatMarkdown(content);
+    stashRawAssistantText(textEl, content);
   }
 
   clearStreamedAssistantText(textEl);
@@ -11461,13 +11468,27 @@ function addScratchpadCopyButton(msgEl) {
   return btn;
 }
 
+// Stash the raw markdown source alongside the rendered HTML so the message
+// copy button can copy it losslessly — rendered innerText drops fence
+// markers (e.g. the ```webbrain-skill block of a generated skill document),
+// which corrupts anything the user pastes back into a text field.
+function stashRawAssistantText(textEl, content) {
+  if (textEl && typeof content === 'string' && content.trim()) {
+    textEl.dataset.rawContent = content;
+  }
+}
+
 function getMessageCopyText(btn) {
   const content = btn?.closest('.message-content');
   if (!content) return null;
   if (btn.classList.contains('scratchpad-copy-btn')) {
     return content.querySelector('pre.scratchpad-dump')?.textContent || '';
   }
-  return content.querySelector('.message-text')?.innerText || null;
+  const textEl = content.querySelector('.message-text');
+  if (!textEl) return null;
+  const raw = textEl.dataset?.rawContent;
+  if (typeof raw === 'string' && raw.trim()) return raw;
+  return textEl.innerText || null;
 }
 
 function bindMessageCopyButton(btn) {

@@ -71,6 +71,11 @@ export const PACKAGED_SKILL_SOURCES = Object.freeze([
     name: 'Batch image download',
     path: 'skills/batch-image-download.md',
   }),
+  Object.freeze({
+    id: 'skill-authoring',
+    name: 'Skill authoring',
+    path: 'skills/skill-authoring.md',
+  }),
 ]);
 export const DEFAULT_SKILL_SOURCES = Object.freeze(
   PACKAGED_SKILL_SOURCES.filter((source) => [
@@ -78,6 +83,7 @@ export const DEFAULT_SKILL_SOURCES = Object.freeze(
     'otp-verification-code-helper',
     'humanizer',
     'batch-image-download',
+    'skill-authoring',
   ].includes(source.id))
 );
 
