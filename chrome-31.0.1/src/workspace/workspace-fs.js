@@ -248,6 +248,57 @@ function friendlyPath(segments) {
   return segments.length ? segments.join('/') : '.';
 }
 
+// A folder name the model reproduces from a page title can differ from the
+// on-disk name in ways invisible to a human: zero-width characters, Unicode
+// composition (NFC/NFD), whitespace runs, trailing dots (Windows strips them
+// at creation). Normalize before comparing so those names still match.
+function normalizeNameForMatch(name) {
+  return String(name ?? '')
+    .normalize('NFC')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+|\.+$/g, '')
+    .toLowerCase();
+}
+
+/**
+ * Tolerant read-only directory walk. Exact segment lookup first; on failure,
+ * match actual sibling directory names with normalizeNameForMatch. A single
+ * fuzzy match is followed (the caller reports the resolved name); zero or
+ * multiple matches throw an error carrying the sibling directory list so the
+ * model (and the user) can see which names actually exist.
+ */
+async function resolveDirLenient(handle, segments) {
+  let dir = handle;
+  const resolved = [];
+  const fuzzy = [];
+  for (const seg of segments) {
+    try {
+      dir = await dir.getDirectoryHandle(seg);
+      resolved.push(seg);
+      continue;
+    } catch { /* exact miss — try the tolerant match */ }
+    const want = normalizeNameForMatch(seg);
+    const dirs = [];
+    for await (const [name, entry] of dir.entries()) {
+      if (entry.kind === 'directory') dirs.push(name);
+    }
+    const matches = dirs.filter((name) => normalizeNameForMatch(name) === want);
+    if (matches.length === 1) {
+      fuzzy.push({ asked: seg, actual: matches[0] });
+      resolved.push(matches[0]);
+      dir = await dir.getDirectoryHandle(matches[0]);
+      continue;
+    }
+    const error = new Error(`Folder not found in working directory: ${friendlyPath(resolved.concat(seg))}`);
+    error.siblings = dirs.slice(0, 30);
+    error.resolvedPrefix = resolved.slice();
+    throw error;
+  }
+  return { dir, resolved, fuzzy };
+}
+
 async function listDirEntries(dir) {
   const entries = [];
   for await (const [name, entry] of dir.entries()) {
@@ -271,13 +322,26 @@ export async function workspaceList(path) {
   const handle = await requireHandle();
   const segments = normalizeWorkspacePath(path);
   if (segments === null) throw new Error(workspaceEscapeError(path));
-  let dir;
+  let walk;
   try {
-    dir = await resolveDirMaybe(handle, segments, false);
-  } catch {
-    throw new Error(`Folder not found in working directory: ${friendlyPath(segments)}`);
+    walk = await resolveDirLenient(handle, segments);
+  } catch (e) {
+    if (e && Array.isArray(e.siblings)) {
+      const prefix = e.resolvedPrefix?.length ? ` (inside ${friendlyPath(e.resolvedPrefix)})` : '';
+      const hint = e.siblings.length
+        ? ` Available folders${prefix}: ${e.siblings.join(', ')} — use one of these names exactly, or list the parent folder first to see current names.`
+        : ` No subfolders exist${prefix} — the working directory may have changed; list the root folder first to see what is actually there.`;
+      throw new Error(`${e.message}.${hint}`);
+    }
+    throw e;
   }
-  return { path: friendlyPath(segments), entries: await listDirEntries(dir) };
+  const { dir, resolved, fuzzy } = walk;
+  const result = { path: friendlyPath(resolved), entries: await listDirEntries(dir) };
+  if (fuzzy.length) {
+    // Tell the model the real on-disk names so later calls use them verbatim.
+    result.resolvedNames = fuzzy.map((m) => ({ asked: m.asked, actual: m.actual }));
+  }
+  return result;
 }
 
 /**
