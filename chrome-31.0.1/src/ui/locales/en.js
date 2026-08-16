@@ -64,6 +64,8 @@ export default {
   'sp.working_dir.title': 'Working directory — the agent may only create, delete, write, and download inside this folder. Click to pick or replace it.',
   'sp.working_dir.needs_auth': 'Working directory needs re-authorization (Chrome revokes folder access after a browser restart) — click to re-pick it.',
   'sp.working_dir.none': 'Pick folder',
+  'sp.ctx_usage.label': 'Context {pct}% · {used} / {budget}',
+  'sp.ctx_usage.title': 'Model window {window}; auto-compact fires at {ratio}% ({budget}). This conversation has been compacted {compactions}×.',
   'sp.btn.history': 'Chat history',
   'sp.btn.settings': 'Settings',
   'sp.btn.clear': 'New conversation',

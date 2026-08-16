@@ -116,6 +116,8 @@ export default {
   'sp.working_dir.title': '工作目录 — 模型只能在所选文件夹内新建、删除、写入和下载。点击选择或更换目录。',
   'sp.working_dir.needs_auth': '工作目录需重新授权（Chrome 在浏览器重启后收回文件夹访问权限）— 点击重新选择。',
   'sp.working_dir.none': '选择目录',
+  'sp.ctx_usage.label': '上下文 {pct}% · {used} / {budget}',
+  'sp.ctx_usage.title': '模型窗口 {window}；达到 {ratio}%（即 {budget}）会触发自动压缩。本对话已压缩 {compactions} 次。',
   'sp.btn.settings': '设置',
   "sp.btn.clear": "新对话",
   'sp.btn.expand': '在新窗口中打开',

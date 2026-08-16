@@ -3426,6 +3426,12 @@ async function handleMessage(msg, sender) {
       return { ok: true, whitelist: state };
     }
 
+    case 'get_context_usage': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (tabId == null) return { ok: false, reason: 'no_tab' };
+      return agent.getContextUsage(tabId);
+    }
+
     case 'get_active_prompt_tier': {
       const provider = providerManager.getActive();
       return {

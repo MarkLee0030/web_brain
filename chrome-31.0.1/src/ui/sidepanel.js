@@ -542,6 +542,9 @@ const thinkingStrengthBtn = document.getElementById('thinking-strength-btn');
 const thinkingStrengthLabel = document.getElementById('thinking-strength-label');
 const workingDirBtn = document.getElementById('btn-working-dir');
 const workingDirLabel = document.getElementById('working-dir-label');
+const ctxUsageEl = document.getElementById('ctx-usage');
+const ctxUsageLabelEl = document.getElementById('ctx-usage-label');
+const ctxUsageFillEl = document.getElementById('ctx-usage-fill');
 const providerPickerBtn = document.getElementById('provider-picker-btn');
 const providerPickerMenu = document.getElementById('provider-picker-menu');
 const providerPickerLabel = document.getElementById('provider-picker-label');
@@ -6699,6 +6702,57 @@ workingDirBtn?.addEventListener('click', async () => {
 
 void loadWorkingDirState();
 
+// ─── Context-window usage indicator ────────────────────────────────────────
+// Slim bar above the input showing the current conversation's token usage
+// against the budget that arms auto-compaction. Refreshed on a timer, on tab
+// visibility, and immediately after a context_compacted event.
+function formatTokenCount(n) {
+  const value = Number(n);
+  if (!Number.isFinite(value)) return '—';
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return String(Math.round(value));
+}
+
+async function refreshContextUsage() {
+  if (!ctxUsageEl || document.visibilityState === 'hidden') return;
+  const tabId = Number(currentTabId);
+  if (!Number.isFinite(tabId)) {
+    ctxUsageEl.hidden = true;
+    return;
+  }
+  try {
+    const res = await sendToBackground('get_context_usage', { tabId });
+    if (!res?.ok) {
+      ctxUsageEl.hidden = true;
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, Number(res.percent) || 0));
+    ctxUsageEl.hidden = false;
+    ctxUsageFillEl.style.width = `${pct}%`;
+    ctxUsageFillEl.classList.toggle('warn', pct >= 80 && pct < 95);
+    ctxUsageFillEl.classList.toggle('crit', pct >= 95);
+    ctxUsageLabelEl.textContent = t('sp.ctx_usage.label', {
+      pct: String(Math.round(pct)),
+      used: formatTokenCount(res.usedTokens),
+      budget: formatTokenCount(res.budget),
+    });
+    ctxUsageEl.title = t('sp.ctx_usage.title', {
+      window: formatTokenCount(res.contextWindow),
+      ratio: String(Math.round(Number(res.compactRatio || 0) * 100)),
+      budget: formatTokenCount(res.budget),
+      compactions: String(Number(res.compactCount) || 0),
+    });
+  } catch {
+    ctxUsageEl.hidden = true;
+  }
+}
+
+void refreshContextUsage();
+setInterval(() => {
+  if (document.visibilityState !== 'hidden') void refreshContextUsage();
+}, 8000);
+
 async function openProvidersSettingsPage() {
   const url = chrome.runtime.getURL('src/ui/settings.html#providers');
   try {
@@ -8657,6 +8711,7 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   requestVisibleSidePanelStateRefresh();
+  void refreshContextUsage();
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -9170,6 +9225,7 @@ function handleAgentUpdateMessage(msg) {
       // context window. Show a subtle inline separator so the user knows
       // earlier history was compacted (not lost to a bug).
       addContextCompactedNote(data);
+      void refreshContextUsage();
       break;
 
     case 'clarify':

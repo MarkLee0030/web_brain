@@ -453,6 +453,9 @@ export class Agent extends LoopDetector {
     // trips the budget. The fixed system+tool-schema overhead rides along in the
     // reported number; the delta captures the new messages.
     this._lastEstCharsAtReport = new Map();
+    // tabId -> how many times auto-compaction ran in this conversation (for
+    // the context-usage UI). Reset with the conversation.
+    this._contextCompactCounts = new Map();
     // tabId -> number of upcoming steps during which the soft (char/message)
     // compaction triggers are suppressed after a compaction just ran. Provides
     // hysteresis so a single fresh screenshot can't re-arm compaction the very
@@ -13413,6 +13416,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     this._lastEstCharsAtReport.delete(tabId);
     this._compactCooldown.delete(tabId);
+    this._contextCompactCounts.delete(tabId);
     this.submitConfirmationMemory.delete(tabId);
     this.hydratedTabs.delete(tabId);
     this.apiAllowedTabs.delete(tabId);
@@ -15670,6 +15674,49 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     );
   }
 
+  /**
+   * Context-window usage snapshot for the side panel's usage indicator.
+   * Same estimation as _manageContext: the provider's last reported
+   * prompt_tokens (which includes the fixed system-prompt + tool-schema
+   * overhead) projected forward by the char-delta of messages added since,
+   * falling back to a chars/4 estimate. Budget = the same token budget that
+   * arms auto-compaction, so the bar shows exactly when compaction will hit.
+   */
+  getContextUsage(tabId) {
+    const messages = this.conversations.get(tabId);
+    if (!Array.isArray(messages) || messages.length < 2) {
+      return { ok: false, reason: 'no_conversation' };
+    }
+    const provider = this.providerManager.getActive();
+    const contextWindow = (provider && Number(provider.contextWindow)) || 128000;
+    const ratio = this._contextCompactRatioForWindow(contextWindow);
+    const budget = this._contextTokenBudget();
+    const totalChars = this._estimateContextChars(messages);
+    const estTokens = Math.ceil(totalChars / 4);
+    const lastReported = this._lastInputTokens.get(tabId) || 0;
+    const lastEstChars = this._lastEstCharsAtReport.get(tabId);
+    let usedTokens;
+    if (lastReported > 0 && lastEstChars != null) {
+      const deltaTokens = Math.max(0, Math.ceil((totalChars - lastEstChars) / 4));
+      usedTokens = Math.max(lastReported + deltaTokens, estTokens);
+    } else {
+      usedTokens = Math.max(lastReported, estTokens);
+    }
+    const percent = budget > 0
+      ? Math.min(999, Math.round((usedTokens / budget) * 1000) / 10)
+      : 0;
+    return {
+      ok: true,
+      usedTokens,
+      budget,
+      contextWindow,
+      compactRatio: ratio,
+      percent,
+      compactCount: this._contextCompactCounts.get(tabId) || 0,
+      messageCount: messages.length,
+    };
+  }
+
   // Char-equivalent billed for the single screenshot that survives image
   // pruning before a request is sent. A vision image costs ~1.5k tokens
   // regardless of byte size, so counting the raw base64 (up to ~1.4 MB) would
@@ -16083,6 +16130,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     // Arm the hysteresis cooldown: skip soft triggers for the next 2 steps.
     this._compactCooldown.set(tabId, 2);
+    this._contextCompactCounts.set(tabId, (this._contextCompactCounts.get(tabId) || 0) + 1);
     // Durable-mirror hygiene: clear this conversation's stored copy, then
     // persist — the mirror is repopulated with ONLY the post-compaction
     // state, so every session's mirror stays small and "continue from

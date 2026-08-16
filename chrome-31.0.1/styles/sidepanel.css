@@ -3069,6 +3069,35 @@ html[data-standalone="true"] #mode-toggle {
   overflow: hidden;
 }
 
+/* Context-window usage indicator above the input */
+.ctx-usage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 14px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ctx-usage-label {
+  white-space: nowrap;
+}
+.ctx-usage-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--overlay-bg-strong);
+  overflow: hidden;
+}
+.ctx-usage-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+.ctx-usage-fill.warn { background: var(--warning); }
+.ctx-usage-fill.crit { background: var(--error); }
+
 /* GFM tables rendered from Markdown pipe tables */
 .md-table-wrapper {
   margin: 8px 0;
