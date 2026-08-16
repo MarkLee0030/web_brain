@@ -279,6 +279,45 @@ export async function clearChatHistoryRecords() {
 const AGENT_CONVERSATION_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
+ * O(n) front-trim for the conversation mirror. The previous implementation
+ * re-stringified the whole trimmed array on EVERY message (O(n^2) with MB
+ * payloads — minutes for long sessions), so on long conversations the mirror
+ * write never finished before the service worker went idle and "continue"
+ * silently fell back to chat-text-only restore. Measure each message once,
+ * keep the system message plus the newest contiguous tail that fits, then
+ * drop tool results orphaned at the cut boundary (their assistant tool_calls
+ * were trimmed away; providers reject those with "tool call ID not found").
+ */
+function trimAgentConversationMessages(conversationId, messages) {
+  const overhead = JSON.stringify({
+    conversationId: String(conversationId), messages: [], updatedAt: 0,
+  }).length + 1024; // envelope + commas + safety margin
+  const first = messages[0];
+  let budget = AGENT_CONVERSATION_MAX_BYTES - overhead - JSON.stringify(first).length;
+  const tail = [];
+  for (let i = messages.length - 1; i >= 1 && budget > 0; i -= 1) {
+    const size = JSON.stringify(messages[i]).length + 1; // entry + comma
+    if (size > budget) break;
+    budget -= size;
+    tail.push(messages[i]);
+  }
+  tail.reverse();
+  const kept = [first, ...tail];
+  const presentCallIds = new Set();
+  for (const message of kept) {
+    if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+    for (const call of message.tool_calls) {
+      if (call && typeof call.id === 'string') presentCallIds.add(call.id);
+    }
+  }
+  return kept.filter((message) => !(
+    message?.role === 'tool'
+    && typeof message.tool_call_id === 'string'
+    && !presentCallIds.has(message.tool_call_id)
+  ));
+}
+
+/**
  * Persist a tab's full agent conversation (system + user + assistant +
  * tool messages) under its conversationId so a history record can be
  * continued after a browser restart — chrome.storage.session, where the
@@ -289,14 +328,7 @@ const AGENT_CONVERSATION_MAX_BYTES = 4 * 1024 * 1024;
 export async function saveAgentConversation(conversationId, messages) {
   if (!conversationId || !Array.isArray(messages) || messages.length === 0) return false;
   const db = await openDB();
-  const trimmed = [messages[0]];
-  for (const message of messages.slice(1).reverse()) {
-    trimmed.splice(1, 0, message);
-    const size = JSON.stringify({ conversationId, messages: trimmed }).length;
-    // Over budget: drop the OLDEST kept message (index 1), never the
-    // system message at index 0.
-    if (size > AGENT_CONVERSATION_MAX_BYTES) trimmed.splice(1, 1);
-  }
+  const trimmed = trimAgentConversationMessages(conversationId, messages);
   await promisifyReq(
     tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME)
       .put({ conversationId: String(conversationId), messages: trimmed, updatedAt: Date.now() }),
