@@ -179,7 +179,7 @@ async function findWhitelistHandle(name) {
     const perm = await w.handle.queryPermission({ mode: 'readwrite' });
     if (perm !== 'granted') {
       throw new Error(
-        `The whitelisted directory "${w.name}" needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts). Ask the user to click "重新授权" next to it in Settings → 白名单工作目录.`,
+        `The whitelisted directory "${w.name}" needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts; it cannot be re-granted without a user click). Ask the user to click "重新授权" next to it in Settings → 白名单工作目录 and allow the prompt — one click, no folder re-picking.`,
       );
     }
   } catch (e) {
@@ -225,7 +225,7 @@ async function requireHandle() {
     const perm = await handle.queryPermission({ mode: 'readwrite' });
     if (perm !== 'granted') {
       throw new Error(
-        'The working directory permission needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts). Ask the user to click the folder button in the WebBrain side panel header once to re-grant it.',
+        'The working directory permission needs re-authorization (Chrome revokes it when the extension reloads or the browser restarts; it cannot be re-granted without a user click). Ask the user to click the folder button in the WebBrain side panel header once and allow the prompt — no folder re-picking needed.',
       );
     }
   } catch (e) {

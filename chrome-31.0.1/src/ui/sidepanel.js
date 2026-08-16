@@ -21,7 +21,7 @@ import {
   saveChatHistoryRecord,
 } from './chat-history-store.js';
 import { historyTextFromElement } from './history-text.js';
-import { saveWorkspaceHandle } from '../workspace/workspace-fs.js';
+import { saveWorkspaceHandle, loadWorkspaceHandle } from '../workspace/workspace-fs.js';
 import { claimRunError } from './run-error-dedupe.js';
 import { RUN_CAPTURE_START_ERROR_PREFIX } from '../run-capture.js';
 import { runUiUnavailableBeforeSeq } from '../run-ui-journal.js';
@@ -6658,6 +6658,25 @@ async function loadWorkingDirState() {
 
 workingDirBtn?.addEventListener('click', async () => {
   try {
+    // Fast path: if a handle is already persisted (Chrome only revoked the
+    // grant), requestPermission pops the lightweight allow/deny prompt
+    // instead of the full folder picker — one click, no folder navigation.
+    try {
+      const existing = await loadWorkspaceHandle();
+      if (existing && typeof existing.requestPermission === 'function') {
+        const perm = await existing.requestPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          await saveWorkspaceHandle(existing);
+          const res = await sendToBackground('pick_working_directory', { name: String(existing.name || '') });
+          if (res?.ok !== false) {
+            workingDirState = res.workingDirectory || null;
+            workingDirPermission = 'granted';
+            syncWorkingDirButton();
+            return;
+          }
+        }
+      }
+    } catch { /* fall through to the full picker */ }
     const handle = await showDirectoryPicker({ id: 'webbrain-working-dir', mode: 'readwrite' });
     // chrome.runtime messaging serializes with JSON and silently drops
     // FileSystemHandle objects, so persist the handle here (window context,

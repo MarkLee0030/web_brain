@@ -529,7 +529,7 @@ export default {
   'st.display.workspace_whitelist.remove': 'Remove',
   'st.display.workspace_whitelist.reauth': 'Re-authorize',
   'st.display.workspace_whitelist.none': 'No whitelisted folders yet',
-  'st.display.workspace_whitelist.needs_auth': 'Permission expired: click "Re-authorize" and pick the same folder again',
+  'st.display.workspace_whitelist.needs_auth': 'Permission expired: click "Re-authorize" and allow the prompt — no need to pick the folder again',
   'st.display.search.placeholder': 'Search General settings',
   'st.display.search.empty': 'No General settings match.',
   'st.display.advanced': 'Advanced',

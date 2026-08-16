@@ -7,7 +7,7 @@ import { escapeHtml } from './utils.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
 import { renderSkillMarkdown } from './skill-markdown.js';
 import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
-import { saveWhitelistHandle } from '../workspace/workspace-fs.js';
+import { saveWhitelistHandle, loadWhitelistHandles } from '../workspace/workspace-fs.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
   DEFAULT_SKILL_SOURCES,
@@ -1275,7 +1275,7 @@ async function renderWhitelistDirs() {
         reauth.className = 'btn-secondary';
         reauth.style.cssText = 'padding:2px 8px;font-size:11px;';
         reauth.textContent = t('st.display.workspace_whitelist.reauth');
-        reauth.addEventListener('click', () => pickWhitelistDir());
+        reauth.addEventListener('click', () => reauthorizeWhitelistDir(w.name));
         row.appendChild(reauth);
       }
       const remove = document.createElement('button');
@@ -1305,6 +1305,26 @@ async function pickWhitelistDir() {
   } catch (e) {
     if (e && e.name === 'AbortError') return; // user cancelled the picker
   }
+}
+
+// Re-grant path: the persisted handle only lost its permission (extension
+// reload / browser restart), so requestPermission pops Chrome's lightweight
+// allow/deny prompt instead of the full folder picker. Falls back to the
+// picker when the handle is gone or the user denies.
+async function reauthorizeWhitelistDir(name) {
+  try {
+    const list = await loadWhitelistHandles();
+    const w = list.find((x) => x.name.toLowerCase() === String(name || '').toLowerCase());
+    if (w && typeof w.handle.requestPermission === 'function') {
+      const perm = await w.handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        await sendToBackground('add_whitelist_directory', { name: w.name });
+        await renderWhitelistDirs();
+        return;
+      }
+    }
+  } catch { /* fall through to the full picker */ }
+  await pickWhitelistDir();
 }
 
 whitelistAddBtn?.addEventListener('click', pickWhitelistDir);

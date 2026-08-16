@@ -473,7 +473,7 @@ export default {
   "st.display.workspace_whitelist.remove": "移除",
   "st.display.workspace_whitelist.reauth": "重新授权",
   "st.display.workspace_whitelist.none": "尚未添加白名单目录",
-  "st.display.workspace_whitelist.needs_auth": "权限已失效：点击「重新授权」并重新选择同一个文件夹",
+  "st.display.workspace_whitelist.needs_auth": "权限已失效：点击「重新授权」，在弹出的确认框里点「允许」即可，无需重新选择文件夹",
   "st.display.strict_secret.label": "严格的机密处理",
   "st.display.strict_secret.desc": "拒绝在总结或助手文本中引用凭据（密码、API 密钥、令牌、OTP）—— 即使你明确要求也是如此。如果你经常分享轨迹文件或共享屏幕，这会很有用。默认关闭：webbrain 运行在你自己的浏览器中，因此默认情况下代理会向你展示你索取的值，只是把 `done` 总结保持整洁。",
   "st.display.request_timeout.label": "LLM 请求超时",
