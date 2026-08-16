@@ -641,6 +641,9 @@ let providerSearchQuery = '';
 const expandedProviders = new Set(); // ids the user explicitly expanded this session
 let customSkills = [];
 let skillPreviewRequestId = 0;
+// Id of the skill currently loaded into the form for editing (null = the
+// form adds a new skill).
+let editingSkillId = null;
 const DEFAULT_SKILL_IDS = new Set(DEFAULT_SKILL_SOURCES.map((source) => source.id));
 
 // --- Init ---
@@ -1081,12 +1084,18 @@ function renderSkills() {
                   data-skill-preview-id="${escapeHtml(skill.id)}">${escapeHtml(skill.name)}</button>
           <div class="setting-desc skill-source">${escapeHtml(source)} · ${escapeHtml(t('st.skills.item.chars', { count: skill.content.length }))}${escapeHtml(toolSummary)}</div>
         </div>
-        <button class="btn-secondary" data-skill-id="${escapeHtml(skill.id)}">${escapeHtml(t('st.skills.remove'))}</button>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <button class="btn-secondary" data-skill-edit-id="${escapeHtml(skill.id)}">${escapeHtml(t('st.skills.edit'))}</button>
+          <button class="btn-secondary" data-skill-id="${escapeHtml(skill.id)}">${escapeHtml(t('st.skills.remove'))}</button>
+        </div>
       </div>`;
   }).join('');
 
   skillsList.querySelectorAll('button[data-skill-preview-id]').forEach((btn) => {
     btn.addEventListener('click', () => previewEnabledSkill(btn.dataset.skillPreviewId));
+  });
+  skillsList.querySelectorAll('button[data-skill-edit-id]').forEach((btn) => {
+    btn.addEventListener('click', () => startSkillEdit(btn.dataset.skillEditId));
   });
   skillsList.querySelectorAll('button[data-skill-id]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -1132,6 +1141,29 @@ async function addPackagedSkill(skillId, button) {
   }
 }
 
+function syncSkillFormMode() {
+  if (btnAddSkillText) {
+    btnAddSkillText.textContent = t(editingSkillId ? 'st.skills.save_edit' : 'st.skills.add_text');
+  }
+}
+
+function cancelSkillEdit() {
+  editingSkillId = null;
+  syncSkillFormMode();
+}
+
+function startSkillEdit(skillId) {
+  const skill = customSkills.find((item) => item.id === skillId);
+  if (!skill) return;
+  editingSkillId = skill.id;
+  if (skillNameInput) skillNameInput.value = skill.name || '';
+  if (skillTextArea) skillTextArea.value = skill.content || '';
+  syncSkillFormMode();
+  skillTextArea?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  skillTextArea?.focus();
+  showSkillsResult('', t('st.skills.editing', { name: skill.name || skill.id }), 'var(--text2)');
+}
+
 async function addSkillFromText() {
   const content = (skillTextArea?.value || '').trim();
   if (!content) {
@@ -1139,6 +1171,30 @@ async function addSkillFromText() {
     return;
   }
   try {
+    if (editingSkillId) {
+      const existing = customSkills.find((item) => item.id === editingSkillId);
+      if (existing) {
+        const updated = {
+          ...existing,
+          name: (skillNameInput?.value || '').trim() || existing.name,
+          content,
+          // Fork built-in skills on edit: as 'text' records the packaged-skill
+          // refresh on extension updates no longer reverts the user's changes.
+          sourceType: existing.sourceType === 'built-in' ? 'text' : existing.sourceType,
+        };
+        await saveCustomSkills(
+          customSkills.map((item) => (item.id === editingSkillId ? updated : item)),
+        );
+        cancelSkillEdit();
+        if (skillNameInput) skillNameInput.value = '';
+        if (skillTextArea) skillTextArea.value = '';
+        flashSkillsResult('ok', t('st.skills.saved'));
+        return;
+      }
+      // Stale edit target (skill was removed meanwhile) — fall through and
+      // save as a new skill instead of failing.
+      cancelSkillEdit();
+    }
     await addCustomSkill({
       id: makeSkillId(),
       name: skillNameInput?.value || '',
@@ -1155,6 +1211,7 @@ async function addSkillFromText() {
 }
 
 async function addSkillFromUrl() {
+  cancelSkillEdit();
   let url;
   try {
     url = normalizeSkillUrl(skillUrlInput?.value);
@@ -1208,6 +1265,7 @@ async function addSkillFromUrl() {
 btnAddSkillText?.addEventListener('click', addSkillFromText);
 btnAddSkillUrl?.addEventListener('click', addSkillFromUrl);
 btnClearSkillForm?.addEventListener('click', () => {
+  cancelSkillEdit();
   if (skillNameInput) skillNameInput.value = '';
   if (skillUrlInput) skillUrlInput.value = '';
   if (skillTextArea) skillTextArea.value = '';
