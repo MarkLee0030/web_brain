@@ -9379,8 +9379,10 @@ function renderClarifyCard(data) {
     const optionsEl = document.createElement('div');
     optionsEl.className = 'clarify-options';
     const choices = [
-      ['once', 'Submit once'],
-      ['deny', 'Do not submit'],
+      // Same semantics as the permission card: allow = remembered for this
+      // conversation, deny = this attempt only.
+      ['once', t('sp.perm.allow_once')],
+      ['deny', t('sp.perm.dont_allow')],
     ];
     for (const [value, label] of choices) {
       const b = document.createElement('button');

@@ -459,6 +459,10 @@ export class Agent extends LoopDetector {
     // next step (compact-every-step thrash). A genuine token-budget overflow is
     // never suppressed — see _manageContext.
     this._compactCooldown = new Map();
+    // Session-scoped submit approvals: tabId -> Set of form identities the
+    // user already confirmed submitting in this conversation. Cleared with
+    // the conversation, so approvals never leak into the next one.
+    this.submitConfirmationMemory = new Map();
     // Auto-screenshot mode. 'off' | 'navigation' | 'state_change' | 'every_step'.
     // Loaded from chrome.storage.local in background.js.
     this.autoScreenshot = 'state_change';
@@ -12660,6 +12664,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   };
 
   async _promptSubmitConfirmation(tabId, submitInfo, onUpdate) {
+    // Session-scoped submit memory: once the user confirms a submit for a
+    // specific form (host + action + field labels — field VALUES such as a
+    // rotating CAPTCHA answer are excluded from the identity), later submits
+    // of the same form in this conversation skip the card.
+    const formKey = this._submitConfirmationKey(submitInfo);
+    if (formKey && this.submitConfirmationMemory.get(tabId)?.has(formKey)) {
+      return 'once';
+    }
     const clarifyId = `submit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const host = normalizeHost(submitInfo?.host || '') || String(submitInfo?.host || '').trim() || 'this site';
 
@@ -12693,8 +12705,38 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     if (response && response.cancelled) return null;
     const v = String(response?.answer || '').trim().toLowerCase();
-    if (v === 'once' || v === 'submit' || v === 'confirm' || v === 'allow' || v === 'yes') return 'once';
+    if (v === 'once' || v === 'submit' || v === 'confirm' || v === 'allow' || v === 'yes') {
+      if (formKey) {
+        const remembered = this.submitConfirmationMemory.get(tabId) || new Set();
+        remembered.add(formKey);
+        this.submitConfirmationMemory.set(tabId, remembered);
+      }
+      return 'once';
+    }
     return 'deny';
+  }
+
+  /**
+   * Stable identity for a submitted form: host + form action + sorted
+   * changed-field LABELS. Field values are deliberately excluded — a
+   * rotating CAPTCHA answer must not break the remembered approval.
+   */
+  _submitConfirmationKey(submitInfo) {
+    try {
+      const host = normalizeHost(submitInfo?.host || '');
+      if (!host) return null;
+      const summary = String(submitInfo?.summary || '');
+      const actionMatch = summary.match(/Form action:\s*\S+\s+(\S+)/);
+      const action = actionMatch ? actionMatch[1] : '';
+      const labels = (Array.isArray(submitInfo?.changedFields) ? submitInfo.changedFields : [])
+        .map((field) => String(field?.label || '').trim())
+        .filter(Boolean)
+        .sort()
+        .join(',');
+      return `${host}|${action}|${labels}`;
+    } catch {
+      return null;
+    }
   }
 
   async _promptWorkflowTargetHealing(tabId, workflow, step, stepIndex, candidates, onUpdate) {
@@ -13371,6 +13413,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     this._lastEstCharsAtReport.delete(tabId);
     this._compactCooldown.delete(tabId);
+    this.submitConfirmationMemory.delete(tabId);
     this.hydratedTabs.delete(tabId);
     this.apiAllowedTabs.delete(tabId);
     this.temporaryApiAllowedTabs.delete(tabId);
