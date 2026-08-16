@@ -3647,6 +3647,12 @@ export class Agent extends LoopDetector {
   static EXECUTION_META_TOOLS = new Set(['clarify', 'scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_TOOLS = new Set(['scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_WRITE_TOOLS = new Set(['scratchpad_write', 'progress_update']);
+  // Workspace tools whose success is physical evidence that a file was saved
+  // locally, satisfying a plan's "requires a download" completion requirement
+  // without a chrome.downloads downloadId. Covers the blocker-site flow
+  // (virtual click → whitelisted staging dir → workspace_copy_in →
+  // workspace_extract) and direct workspace_download.
+  static EXECUTION_DOWNLOAD_EVIDENCE_TOOLS = new Set(['workspace_download', 'workspace_copy_in', 'workspace_extract']);
   static DELIVERY_OBSERVATION_TOOLS = new Set(['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'get_selection', 'find_text', 'scroll', 'wait_for_stable', 'wait_for_element', 'read_pdf', 'fetch_url', 'research_url', 'read_downloaded_file', 'iframe_read', 'get_window_info', 'list_downloads', 'progress_read', 'inspect_viewport', 'screenshot', 'get_frames', 'get_shadow_dom', 'shadow_dom_query', 'read_youtube_transcript']);
   static NAV_PRONE_TOOLS = new Set(['click', 'click_ax', 'set_checked', 'navigate', 'go_back', 'go_forward', 'execute_js', 'iframe_click', 'execute_webmcp_tool']);
   static RECOMMENDED_ACTION_FAST_PATH_IDS = new Set(['download-media', 'tweet-webbrain', 'post-webbrain-linkedin', 'find-coupons']);
@@ -6020,7 +6026,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (fnName !== 'done') {
         this._markPlanExecutionToolCall(tabId, fnName, toolResult, {
           consequential: executionMutationEvidence,
-          download: capabilities.includes(Capability.DOWNLOAD),
+          download: capabilities.includes(Capability.DOWNLOAD)
+            || this.constructor.EXECUTION_DOWNLOAD_EVIDENCE_TOOLS.has(fnName),
         });
       }
       const completionStateBeforeTool = this.completionInvariants.get(tabId) || null;
@@ -14933,6 +14940,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       Capability.DOWNLOAD,
       Capability.UPLOAD,
       Capability.SCHEDULE,
+      Capability.FILESYSTEM,
     ]);
     if (capabilities.includes(Capability.NETWORK)) return isNetworkMutation(name, args);
     return capabilities.some(capability => mutationCapabilities.has(capability));
@@ -14957,6 +14965,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (name === 'download_social_media') {
       return Number(result?.completedCount || 0) > 0
         || (result?.savedFile?.downloadId != null && result.savedFile.state === 'complete');
+    }
+    if (name === 'workspace_download') {
+      return result?.success === true && Number(result?.savedCount || 0) > 0;
+    }
+    if (name === 'workspace_copy_in') {
+      // A verified copy of a real file INTO the working directory is saved-file
+      // evidence (the source came from the user's whitelisted staging dir).
+      return result?.success === true && Number(result?.bytes || 0) > 0;
+    }
+    if (name === 'workspace_extract') {
+      return result?.success === true && Number(result?.extractedCount || 0) > 0;
     }
     return result?.downloadId != null && result.state === 'complete';
   }
