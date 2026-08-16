@@ -902,6 +902,8 @@ export default {
   'hist.btn.continue': 'Continue',
   'hist.btn.continue.title': 'Restore this conversation into the side panel and continue it (prefers its original tab)',
   'hist.btn.continue.done': 'Restored ✓',
+  'hist.btn.continue.done.detail': 'Restored {n} messages (incl. {t} tool results) — full context loaded',
+  'hist.btn.continue.done.text_only': 'Restored conversation text (record predates full-context capture; tool-level memory unavailable)',
   'hist.btn.continue.error': 'Restore failed',
   'hist.btn.export': 'Export Markdown',
   'hist.btn.export.title': 'Export selected conversation as Markdown',

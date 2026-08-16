@@ -3226,7 +3226,16 @@ async function handleMessage(msg, sender) {
       } catch {
         try { await chrome.tabs.update(tabId, { active: true }); } catch { /* best effort */ }
       }
-      return { ok: true, restoredAgent, panelOpened, conversationId: record.conversationId || null };
+      const restored = agent.conversations.get(tabId) || [];
+      const restoredToolMessages = restored.filter((m) => m?.role === 'tool').length;
+      return {
+        ok: true,
+        restoredAgent,
+        restoredMessages: restored.length,
+        restoredToolMessages,
+        panelOpened,
+        conversationId: record.conversationId || null,
+      };
     }
 
     case 'list_scheduled_jobs': {

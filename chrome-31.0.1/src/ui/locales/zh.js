@@ -771,6 +771,8 @@ export default {
   "hist.btn.continue": "继续对话",
   "hist.btn.continue.title": "把这段对话恢复到侧栏并继续（优先恢复到原来的标签页）",
   "hist.btn.continue.done": "已恢复 ✓",
+  "hist.btn.continue.done.detail": "已恢复 {n} 条消息（含 {t} 条工具调用结果）—— 完整上下文已加载",
+  "hist.btn.continue.done.text_only": "已恢复对话文本（该记录保存于完整上下文功能之前，工具级记忆不可用）",
   "hist.btn.continue.error": "恢复失败",
   "hist.btn.export": "导出 Markdown",
   "hist.btn.export.title": "将选中的对话导出为 Markdown",

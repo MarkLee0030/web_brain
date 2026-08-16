@@ -79,6 +79,14 @@ async function continueSelectedConversation() {
     const res = await sendToBackground('continue_conversation', { recordId: record.id, tabId });
     if (res?.ok) {
       btnContinue.textContent = t('hist.btn.continue.done');
+      if (res.restoredAgent) {
+        btnContinue.title = t('hist.btn.continue.done.detail', {
+          n: res.restoredMessages ?? 0,
+          t: res.restoredToolMessages ?? 0,
+        });
+      } else {
+        btnContinue.title = t('hist.btn.continue.done.text_only');
+      }
     } else {
       btnContinue.textContent = t('hist.btn.continue.error');
       btnContinue.title = res?.error ? String(res.error) : t('hist.btn.continue.error');
