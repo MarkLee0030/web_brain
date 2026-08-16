@@ -6728,10 +6728,15 @@ async function refreshContextUsage() {
       return;
     }
     const pct = Math.max(0, Math.min(100, Number(res.percent) || 0));
+    // Color thresholds track the REAL compaction trigger for this model
+    // (contextCompactRatio of its window): red = compaction fires now,
+    // orange = within 10 points of it.
+    const triggerPct = Math.round(Number(res.compactRatio || 0.8) * 100);
+    const warnFrom = Math.max(50, triggerPct - 10);
     ctxUsageEl.hidden = false;
     ctxUsageFillEl.style.width = `${pct}%`;
-    ctxUsageFillEl.classList.toggle('warn', pct >= 80 && pct < 95);
-    ctxUsageFillEl.classList.toggle('crit', pct >= 95);
+    ctxUsageFillEl.classList.toggle('warn', pct >= warnFrom && pct < triggerPct);
+    ctxUsageFillEl.classList.toggle('crit', pct >= triggerPct);
     ctxUsageLabelEl.textContent = t('sp.ctx_usage.label', {
       pct: String(Math.round(pct)),
       used: formatTokenCount(res.usedTokens),
@@ -7612,6 +7617,17 @@ async function parseSlashCommands(text, tabId = currentTabId, options = {}) {
     if (currentTabId !== tabId) return remainder;
     if (res?.ok && res.compacted) {
       addContextCompactedNote({ ...res, manual: true });
+      // Explicit success feedback with the numbers — the inline note alone
+      // is easy to miss, and on short conversations "summarized: 0" is the
+      // expected (and otherwise invisible) outcome.
+      showComposerToast(
+        t('sp.compact.done', {
+          summarized: Number(res.summarized) || 0,
+          remaining: Number(res.remaining) || 0,
+        }),
+        { duration: 6000 },
+      );
+      void refreshContextUsage();
     } else if (res?.ok && res.reason === 'busy') {
       showComposerToast(t('sp.compact.busy'), { duration: 5000 });
     } else if (res?.ok) {

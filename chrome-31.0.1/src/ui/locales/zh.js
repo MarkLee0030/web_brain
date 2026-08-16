@@ -640,6 +640,7 @@ export default {
   'sp.slash.plan': '以规划意图切换到提问模式',
   'sp.context_compacted_manual': '上下文已压缩',
   'sp.compact.nothing_to_compact': '暂无可压缩内容 — 旧上下文不足。',
+  'sp.compact.done': '上下文已压缩：{summarized} 条旧消息折叠为摘要（当前保留 {remaining} 条消息）。',
   'sp.compact.busy': '运行时无法压缩 — 请等待完成。',
   'sp.compact.failed': '上下文压缩失败：{error}',
   'tool.inspect_element_styles': '正在检查样式',
