@@ -16037,6 +16037,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     // Arm the hysteresis cooldown: skip soft triggers for the next 2 steps.
     this._compactCooldown.set(tabId, 2);
+    // Persist the POST-compaction conversation right away: the durable
+    // mirror (and "continue from history") must capture the latest
+    // compaction's summary + subsequent messages, never the discarded
+    // pre-compaction history.
+    this._persist(tabId);
 
     console.log(`[WebBrain] Context trimmed for tab ${tabId}: ${oldMessages.length} old messages → summary. ${messages.length} messages remain.`);
 
@@ -16867,7 +16872,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * Called when LLM returns a context overflow error.
    * Keeps system prompt + only the last few messages.
    */
-  _emergencyTrim(messages) {
+  _emergencyTrim(messages, tabId = null) {
     const systemMsg = messages[0];
     // Pin the original user task (same logic as _manageContext).
     let originalTask = null;
@@ -16936,6 +16941,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.push(notice, ack, ...recent);
 
     console.log(`[WebBrain] Emergency context trim: kept ${messages.length} messages.`);
+    // Same durable-mirror rule as _manageContext: the persisted copy must be
+    // the post-trim state, not the discarded pre-trim history.
+    if (tabId != null) this._persist(tabId);
   }
 
   /**
@@ -24378,7 +24386,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
     const emergencyTrimMessagesForRun = () => {
       if (!selectionOnly) {
-        this._emergencyTrim(messages);
+        this._emergencyTrim(messages, tabId);
         return;
       }
       const rawMessages = rawModelMessagesForRun();
@@ -25262,7 +25270,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
     const emergencyTrimMessagesForRun = () => {
       if (!selectionOnly) {
-        this._emergencyTrim(messages);
+        this._emergencyTrim(messages, tabId);
         return;
       }
       const rawMessages = rawModelMessagesForRun();
