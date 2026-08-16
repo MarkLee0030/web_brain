@@ -47,7 +47,7 @@ function refreshButtons() {
 
 function sendToBackground(action, data = {}) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action, ...data }, (response) => {
+    chrome.runtime.sendMessage({ target: 'background', action, ...data }, (response) => {
       if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
       else resolve(response);
     });
@@ -81,9 +81,11 @@ async function continueSelectedConversation() {
       btnContinue.textContent = t('hist.btn.continue.done');
     } else {
       btnContinue.textContent = t('hist.btn.continue.error');
+      btnContinue.title = res?.error ? String(res.error) : t('hist.btn.continue.error');
     }
-  } catch {
+  } catch (e) {
     btnContinue.textContent = t('hist.btn.continue.error');
+    btnContinue.title = e?.message || String(e);
   }
   setTimeout(() => {
     refreshButtons();
