@@ -1689,6 +1689,12 @@ function isSuccessfulAskCompletion(mode, response) {
 const tabChats = new Map();
 const TAB_CHAT_LOAD_FAILED = Symbol('tab-chat-load-failed');
 const tabChatOperations = new Map();
+// "Continue this conversation" restores: while a tab id is present here, every
+// chat/history persist path for that tab stays silent, so the outgoing chat's
+// pending writes can never land in the continued session's storage slot or
+// history record. Cleared once the continued chat is rendered (or the tab is
+// re-rendered from another trusted source).
+const tabContinueGuards = new Map();
 const tabChatHandoffGenerations = new Map();
 const tabChatHandoffOwnerId = `sidepanel-chat-${
   globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -1749,6 +1755,10 @@ function persistTabChat(tabId, html, { allowHidden = false } = {}) {
   }
   const numericTabId = Number(tabId);
   if (!Number.isFinite(numericTabId)) return Promise.resolve({ ok: false, error: 'No tab ID' });
+  if (tabContinueGuards.has(numericTabId)) {
+    // A continue-restore owns this tab's storage slot right now.
+    return Promise.resolve({ ok: false, skipped: true, reason: 'continue-restore' });
+  }
   const handoffGeneration = tabChatHandoffGenerations.get(numericTabId);
   const payload = {
     tabId: numericTabId,
@@ -1774,6 +1784,7 @@ function persistTabChat(tabId, html, { allowHidden = false } = {}) {
 async function flushRenderedTabChat({ allowHidden = false } = {}) {
   const tabId = renderedTabId;
   if (tabId == null) return;
+  if (tabContinueGuards.has(Number(tabId))) return;
   if (persistTimer && persistTimerTabId === tabId) {
     clearTimeout(persistTimer);
     persistTimer = null;
@@ -2269,6 +2280,9 @@ async function renderClearedConversationForTab(tabId) {
   clearRetryAttachmentsForTab(tabId);
   setApiMutationsAllowedForTab(tabId, false);
   await resetChatHistoryStateForTab(tabId);
+  // A cleared chat is authoritative for the tab's storage slot — lift any
+  // continue-restore guard so the empty state below actually persists.
+  tabContinueGuards.delete(Number(tabId));
   if (currentTabId !== tabId) return;
   resetChatNavigation();
   renderedTabId = tabId;
@@ -2317,6 +2331,7 @@ function schedulePersist() {
   if (document.visibilityState === 'hidden') return;
   if (persistTimer) clearTimeout(persistTimer);
   const tabId = renderedTabId;
+  if (tabId != null && tabContinueGuards.has(Number(tabId))) return;
   const html = messagesEl.innerHTML;
   if (tabId != null) {
     lastVisibleTabChatSnapshot = { tabId: Number(tabId), html };
@@ -2489,6 +2504,7 @@ async function persistChatHistorySnapshot(tabId, { refreshTabInfo = false } = {}
   if (document.visibilityState === 'hidden'
       || !Number.isFinite(numericTabId)
       || renderedTabId !== numericTabId) return;
+  if (tabContinueGuards.has(numericTabId)) return;
   const messages = extractChatHistoryMessages(messagesEl);
   if (!messages.some((message) => message.role === 'user')) return;
   const saveSeq = nextChatHistorySaveSeqForTab(numericTabId);
@@ -2525,6 +2541,7 @@ async function repairRestoredChatHistorySnapshot(tabId) {
   if (document.visibilityState === 'hidden'
       || !Number.isFinite(numericTabId)
       || renderedTabId !== numericTabId) return;
+  if (tabContinueGuards.has(numericTabId)) return;
   const recordId = chatHistoryRecordIdsByTab.get(numericTabId);
   if (!recordId) return;
   const messages = extractChatHistoryMessages(messagesEl);
@@ -4233,7 +4250,14 @@ async function switchToTab(newTabId) {
     // Chrome gives each tab-specific side panel its own document. The
     // visibility refresh below coordinates ownership when the destination
     // document becomes active, so this in-document switch only restores cache.
-    const html = await loadTabChat(newTabId);
+    // Exception: a pending continue-restore bumped the tab's handoff
+    // generation under a background owner — re-claim ownership with the load
+    // or this document's later persists would be rejected as stale.
+    const hadContinueGuard = tabContinueGuards.has(Number(newTabId));
+    let html = hadContinueGuard
+      ? await loadTabChat(newTabId, { waitForHandoff: true })
+      : await loadTabChat(newTabId);
+    if (html === TAB_CHAT_LOAD_FAILED) html = null;
     if (switchGeneration !== tabSwitchGeneration || currentTabId !== newTabId) return;
     if (html) {
       await hydrateRestoredChatHistory(newTabId, html);
@@ -4248,6 +4272,9 @@ async function switchToTab(newTabId) {
       messagesEl.innerHTML = '';
       addMessage('system', t('sp.help_message'));
     }
+    // The DOM now shows trusted content for this tab — any continue-restore
+    // guard left over from a background-document apply is fulfilled.
+    tabContinueGuards.delete(newTabId);
     restoreInputDraftForTab(newTabId);
     renderAttachmentPreviews();
     renderQueuedComposerMessages(newTabId);
@@ -4289,6 +4316,9 @@ async function refreshVisibleSidePanelState() {
     messagesEl.innerHTML = '';
     addMessage('system', t('sp.help_message'));
   }
+  // Trusted render from the shared session copy — fulfills any pending
+  // continue-restore guard for this tab.
+  tabContinueGuards.delete(tabId);
   await restoreActiveRunState(tabId);
   return document.visibilityState !== 'hidden' && sameTabId(currentTabId, tabId);
 }
@@ -8694,23 +8724,95 @@ chrome.runtime.onMessage.addListener((msg) => {
   requestVisibleSidePanelStateRefresh();
 });
 
-// "Continue this conversation" from the history page: the tab's chat and
-// conversation identity were replaced server-side. Drop the cached HTML and
-// identity so the next hydration picks up the restored record's
-// conversationId (future saves append to that record, not a new one).
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.target !== 'sidepanel'
-      || msg.action !== 'tab_chat_continue'
-      || document.visibilityState === 'hidden'
-      || !sameTabId(currentTabId, msg.tabId)) return;
-  tabChats.delete(Number(msg.tabId));
-  if (lastVisibleTabChatSnapshot
-      && sameTabId(lastVisibleTabChatSnapshot.tabId, msg.tabId)) {
+// "Continue this conversation" from the history page. The background restores
+// the agent context, saves the continued chat HTML into the tab's session
+// slot, then broadcasts the full payload (html + conversationId + recordId).
+// Applying it must be atomic against this document's own writers: the
+// outgoing chat's debounced persists must never land in the continued
+// session's storage slot (that resurrected the old chat) or its history
+// record (that destroyed the continued session's history).
+async function applyContinuedConversation(msg) {
+  const tabId = Number(msg?.tabId);
+  if (!Number.isFinite(tabId)) return;
+  const conversationId = msg.conversationId ? String(msg.conversationId) : null;
+  const recordId = msg.recordId ? String(msg.recordId) : conversationId;
+  const html = typeof msg.html === 'string' ? msg.html : '';
+  const isCurrentVisible = document.visibilityState !== 'hidden'
+    && sameTabId(currentTabId, tabId)
+    && tabSwitchTransitionId == null;
+
+  // 1. Stop every pending write of the outgoing chat WITHOUT flushing it to
+  //    the tab's session slot — that slot already belongs to the continued
+  //    conversation (the background saved its HTML before broadcasting).
+  if (persistTimer && sameTabId(persistTimerTabId, tabId)) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    persistTimerTabId = null;
+  }
+  if (lastVisibleTabChatSnapshot && sameTabId(lastVisibleTabChatSnapshot.tabId, tabId)) {
     lastVisibleTabChatSnapshot = null;
   }
-  chatHistoryConversationIdsByTab.delete(Number(msg.tabId));
-  chatHistoryRecordIdsByTab.delete(Number(msg.tabId));
-  requestVisibleSidePanelStateRefresh();
+  tabChats.delete(tabId);
+
+  // 2. Preserve the outgoing conversation's final DOM state in ITS OWN
+  //    history record, before the identity maps switch over.
+  if (isCurrentVisible && sameTabId(renderedTabId, tabId)) {
+    await flushChatHistorySnapshot(tabId).catch(() => {});
+  }
+
+  // 3. Silence all persist paths for this tab until the continued chat is
+  //    rendered here (hidden/background documents keep the guard until they
+  //    re-render this tab from a trusted source).
+  tabContinueGuards.set(tabId, { conversationId });
+  try {
+    // 4. Adopt the continued session's identity verbatim — no re-derivation,
+    //    so future saves append to that record instead of clobbering it with
+    //    the outgoing chat or forking a new record.
+    if (conversationId) chatHistoryConversationIdsByTab.set(tabId, conversationId);
+    else chatHistoryConversationIdsByTab.delete(tabId);
+    if (recordId) chatHistoryRecordIdsByTab.set(tabId, recordId);
+    else chatHistoryRecordIdsByTab.delete(tabId);
+
+    if (!isCurrentVisible) return;
+
+    // 5. Replace the rendered chat with the continued session's HTML.
+    hideActivity();
+    currentAssistantEl = null;
+    resetChatNavigation();
+    renderedTabId = tabId;
+    if (html) {
+      messagesEl.innerHTML = html;
+      messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
+      rebindRestoredMessageControls();
+    } else {
+      messagesEl.innerHTML = '';
+      addMessage('system', t('sp.help_message'));
+    }
+    lastVisibleTabChatSnapshot = { tabId, html: messagesEl.innerHTML };
+    tabChats.set(tabId, messagesEl.innerHTML);
+    // The continue bumped the tab's handoff generation under a background
+    // owner, so this document must re-claim ownership or its future persists
+    // would be rejected as stale-handoff.
+    const claimed = await loadTabChat(tabId, { waitForHandoff: true });
+    if (claimed === TAB_CHAT_LOAD_FAILED) {
+      console.warn('[WebBrain] handoff re-claim after continue failed; the next visibility refresh will retry.');
+    }
+    renderQueuedComposerMessages(tabId);
+    await restoreActiveRunState(tabId);
+    restoreLatestChatTurnPosition();
+    refreshScheduledJobs({ tabId });
+    refreshRecommendedActions();
+    void refreshContextUsage();
+  } finally {
+    if (isCurrentVisible) tabContinueGuards.delete(tabId);
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel' || msg.action !== 'tab_chat_continue') return;
+  void applyContinuedConversation(msg).catch((error) => {
+    console.warn('[WebBrain] failed to apply continued conversation:', error);
+  });
 });
 
 document.addEventListener('visibilitychange', () => {

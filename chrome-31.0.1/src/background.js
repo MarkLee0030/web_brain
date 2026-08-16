@@ -3177,6 +3177,11 @@ async function handleMessage(msg, sender) {
     case 'continue_conversation': {
       const tabId = Number(msg.tabId);
       if (!Number.isFinite(tabId)) return { ok: false, error: 'No target tab for continue' };
+      if (agent.isRunning(tabId)) {
+        // Restoring mid-run would be clobbered by the in-flight loop's next
+        // persist — refuse instead of corrupting both conversations.
+        return { ok: false, error: 'The target tab still has a run in progress. Stop it (or wait for it to finish) before continuing another conversation there.' };
+      }
       const record = await getChatHistoryRecord(msg.recordId);
       if (!record) return { ok: false, error: 'History record not found' };
       let restoredAgent = false;
@@ -3214,15 +3219,42 @@ async function handleMessage(msg, sender) {
         }
       }
       if (html) {
-        tabChatHandoff.save(tabId, html, { ownerId: '' }).catch(() => {});
+        // Claim a fresh handoff generation under a background owner, then save
+        // the continued HTML under that ownership. Any persist sent by a
+        // pre-continue panel carries the old generation and is rejected as
+        // stale-handoff — deterministically, regardless of arrival order.
+        // Open panels re-claim ownership when they apply the broadcast.
+        const claim = await tabChatHandoff.load(tabId, {
+          waitForHandoff: true,
+          claimantId: 'background-continue',
+        }).catch(() => null);
+        const claimGeneration = Number(claim?.handoffGeneration);
+        if (claim?.handoffOwnerId === 'background-continue' && Number.isFinite(claimGeneration)) {
+          await tabChatHandoff.save(tabId, html, {
+            ownerId: 'background-continue',
+            handoffGeneration: claimGeneration,
+          }).catch(() => {});
+        } else {
+          await tabChatHandoff.save(tabId, html, { ownerId: '' }).catch(() => {});
+        }
       }
       if (Number.isFinite(Number(record.tabId)) && Number(record.tabId) !== tabId) {
         // Re-key the record to the tab it continues in, so future turns keep
         // appending to this record instead of forking a new one.
         await saveChatHistoryRecord({ ...record, tabId }).catch(() => {});
       }
-      // Tell any open side panel for this tab to reload its chat + identity.
-      chrome.runtime.sendMessage({ target: 'sidepanel', action: 'tab_chat_continue', tabId }).catch(() => {});
+      // Tell any open side panel for this tab to adopt the restored chat +
+      // identity. The payload carries everything the panel needs, so it never
+      // re-derives identity — previously the outgoing chat's pending writes
+      // could land in the continued session's history record and destroy it.
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
+        action: 'tab_chat_continue',
+        tabId,
+        html,
+        conversationId: record.conversationId || null,
+        recordId: String(record.id || ''),
+      }).catch(() => {});
       let panelOpened = false;
       try {
         // Runs inside the user gesture of the history-page click.
