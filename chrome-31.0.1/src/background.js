@@ -2197,6 +2197,62 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // async response
 });
 
+function escapeHtmlSafe(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[character]));
+}
+
+// Minimal markdown→HTML for reconstructing old chat history (inline code,
+// bold, italic, http(s) links, ATX headings, newlines) — same ordering rules
+// as the side panel's formatMarkdown inline passes.
+function inlineMarkdownToHtml(text) {
+  let out = escapeHtmlSafe(text);
+  const codes = [];
+  out = out.replace(/`([^`\n]+)`/g, (_match, code) => {
+    const id = `__C_${codes.length}__`;
+    codes.push(code);
+    return id;
+  });
+  out = out
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, href) => (
+    `<a href="${escapeHtmlSafe(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+  ));
+  out = out.replace(/^(#{1,6})[ \t]+(.+)$/gm, (_match, hashes, content) => (
+    `<h${hashes.length}>${content}</h${hashes.length}>`
+  ));
+  out = out.replace(/\n/g, '<br>');
+  codes.forEach((code, i) => {
+    out = out.replace(`__C_${i}__`, () => `<code>${escapeHtmlSafe(code)}</code>`);
+  });
+  return out;
+}
+
+// Rebuild sidepanel-compatible chat markup from a history record's messages.
+// Old records predate the html snapshot; attachments cannot be resurrected
+// from record metadata, so only text messages are reconstructed.
+function buildChatHtmlFromMessages(messages) {
+  if (!Array.isArray(messages)) return '';
+  const parts = [];
+  for (const message of messages) {
+    const role = message?.role === 'assistant'
+      ? 'assistant'
+      : (message?.role === 'user' ? 'user' : null);
+    if (!role) continue;
+    const text = typeof message?.text === 'string' ? message.text : '';
+    if (!text.trim()) continue;
+    const content = role === 'assistant' ? inlineMarkdownToHtml(text) : escapeHtmlSafe(text);
+    parts.push(`<div class="message ${role}"><div class="message-content"><div class="message-text">${content}</div></div></div>`);
+  }
+  return parts.join('');
+}
+
 async function handleMessage(msg, sender) {
   const lightweightAction = [
     'get_recording_state',
@@ -3119,20 +3175,41 @@ async function handleMessage(msg, sender) {
       const record = await getChatHistoryRecord(msg.recordId);
       if (!record) return { ok: false, error: 'History record not found' };
       let restoredAgent = false;
-      if (record.conversationId) {
-        const stored = await loadAgentConversation(record.conversationId);
-        if (Array.isArray(stored) && stored.length > 1) {
-          const res = await agent.restoreConversation(
-            tabId,
-            stored,
-            record.mode || 'ask',
-            record.conversationId,
-          );
-          restoredAgent = res?.ok === true;
+      const stored = record.conversationId
+        ? await loadAgentConversation(record.conversationId)
+        : null;
+      if (Array.isArray(stored) && stored.length > 1) {
+        const res = await agent.restoreConversation(
+          tabId,
+          stored,
+          record.mode || 'ask',
+          record.conversationId,
+        );
+        restoredAgent = res?.ok === true;
+      } else {
+        // Records saved before agent-conversation mirroring: rebuild the
+        // model's context from the chat-level messages so it at least sees
+        // the prior dialogue (tool-call internals are gone).
+        const res = await agent.restoreConversationFromChat(
+          tabId,
+          Array.isArray(record.messages) ? record.messages : [],
+          record.mode || 'ask',
+          record.conversationId || null,
+        );
+        restoredAgent = res?.ok === true;
+      }
+      let html = typeof record.html === 'string' && record.html.trim() ? record.html : '';
+      if (!html) {
+        // Old records predate the html snapshot — synthesize sidepanel-
+        // compatible chat markup from the stored messages and save it back
+        // so the next continue restores instantly.
+        html = buildChatHtmlFromMessages(record.messages);
+        if (html) {
+          await saveChatHistoryRecord({ ...record, html }).catch(() => {});
         }
       }
-      if (typeof record.html === 'string' && record.html.trim()) {
-        tabChatHandoff.save(tabId, record.html, { ownerId: '' }).catch(() => {});
+      if (html) {
+        tabChatHandoff.save(tabId, html, { ownerId: '' }).catch(() => {});
       }
       if (Number.isFinite(Number(record.tabId)) && Number(record.tabId) !== tabId) {
         // Re-key the record to the tab it continues in, so future turns keep

@@ -1211,6 +1211,31 @@ export class Agent extends LoopDetector {
   }
 
   /**
+   * Fallback for history records saved before agent-conversation mirroring
+   * existed: rebuild a conversation from the chat-level messages (user /
+   * assistant text) so the model at least sees the prior dialogue and can
+   * pick up where it left off. Tool-call internals are lost — only the
+   * visible conversation is reconstructed, under the current system prompt.
+   */
+  async restoreConversationFromChat(tabId, chatMessages, mode = 'ask', conversationId = null) {
+    if (tabId == null || !Array.isArray(chatMessages)) {
+      return { ok: false, error: 'restoreConversationFromChat needs a tab and a message list' };
+    }
+    const messages = [{ role: 'system', content: this._buildSystemPrompt(mode, tabId) }];
+    for (const chat of chatMessages) {
+      const role = chat?.role === 'assistant' ? 'assistant' : (chat?.role === 'user' ? 'user' : null);
+      if (!role) continue;
+      const text = typeof chat?.text === 'string' && chat.text.trim() ? chat.text.trim() : null;
+      if (!text) continue;
+      messages.push({ role, content: text });
+    }
+    if (messages.length < 2) {
+      return { ok: false, error: 'history record contains no user/assistant text to restore' };
+    }
+    return this.restoreConversation(tabId, messages, mode, conversationId);
+  }
+
+  /**
    * Snapshot the effective runtime settings for a run. Anything we cannot
    * observe is omitted rather than guessed: an absent field reads as "unknown"
    * in a dump, while a hard `false`/'ask' would assert a setting the run never
