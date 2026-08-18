@@ -28,8 +28,8 @@ function openDB() {
   return dbPromise;
 }
 
-function tx(db, mode = 'readonly') {
-  return db.transaction([STORE_NAME], mode);
+function tx(db, mode = 'readonly', stores = [STORE_NAME]) {
+  return db.transaction(stores, mode);
 }
 
 function promisifyReq(req) {
@@ -330,7 +330,7 @@ export async function saveAgentConversation(conversationId, messages) {
   const db = await openDB();
   const trimmed = trimAgentConversationMessages(conversationId, messages);
   await promisifyReq(
-    tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME)
+    tx(db, 'readwrite', [CONVERSATION_STORE_NAME]).objectStore(CONVERSATION_STORE_NAME)
       .put({ conversationId: String(conversationId), messages: trimmed, updatedAt: Date.now() }),
   );
   return true;
@@ -346,7 +346,7 @@ export async function loadAgentConversation(conversationId) {
   try {
     const db = await openDB();
     const entry = await promisifyReq(
-      tx(db).objectStore(CONVERSATION_STORE_NAME).get(String(conversationId)),
+      tx(db, 'readonly', [CONVERSATION_STORE_NAME]).objectStore(CONVERSATION_STORE_NAME).get(String(conversationId)),
     );
     return entry && Array.isArray(entry.messages) ? entry.messages : null;
   } catch {
@@ -364,7 +364,7 @@ export async function clearAgentConversation(conversationId) {
   try {
     const db = await openDB();
     await promisifyReq(
-      tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME).delete(String(conversationId)),
+      tx(db, 'readwrite', [CONVERSATION_STORE_NAME]).objectStore(CONVERSATION_STORE_NAME).delete(String(conversationId)),
     );
   } catch { /* best effort */ }
 }
@@ -377,12 +377,12 @@ export async function clearAgentConversation(conversationId) {
 export async function pruneAgentConversations(keep = 200) {
   try {
     const db = await openDB();
-    const all = await promisifyReq(tx(db).objectStore(CONVERSATION_STORE_NAME).getAll());
+    const all = await promisifyReq(tx(db, 'readonly', [CONVERSATION_STORE_NAME]).objectStore(CONVERSATION_STORE_NAME).getAll());
     if (!Array.isArray(all) || all.length <= keep) return;
     const stale = all
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
       .slice(keep);
-    const write = tx(db, 'readwrite').objectStore(CONVERSATION_STORE_NAME);
+    const write = tx(db, 'readwrite', [CONVERSATION_STORE_NAME]).objectStore(CONVERSATION_STORE_NAME);
     await Promise.all(
       stale.map((entry) => entry?.conversationId && promisifyReq(write.delete(String(entry.conversationId)))),
     );

@@ -1018,7 +1018,9 @@ chrome.storage.onChanged.addListener((changes) => {
       const messages = agent.conversations.get(tabId);
       const conversationId = agent.conversationIds.get(tabId);
       if (Number.isFinite(tabId) && Array.isArray(messages) && conversationId) {
-        saveAgentConversation(conversationId, messages).catch(() => {});
+        saveAgentConversation(conversationId, messages).catch((error) => {
+          console.warn('[WebBrain] agent-conversation mirror failed:', error);
+        });
       }
       break;
     }
